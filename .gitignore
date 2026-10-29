@@ -1,0 +1,7 @@
+# CPython has its own Git history and development branch.
+/cpython/
+/build/
+/logs/
+/.venv/
+__pycache__/
+*.py[cod]
