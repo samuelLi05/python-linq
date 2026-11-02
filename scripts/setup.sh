@@ -2,6 +2,7 @@
 set -euo pipefail
 
 project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$project_root/scripts/common.sh"
 source_dir="$project_root/cpython"
 build_dir="$project_root/build/debug"
 log_dir="$project_root/logs"
@@ -13,6 +14,7 @@ if [[ ! "$build_jobs" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 bash "$project_root/scripts/check-environment.sh"
+configure_build_environment
 mkdir -p "$build_dir" "$log_dir"
 
 if [[ ! -f "$source_dir/configure" ]]; then
@@ -36,8 +38,12 @@ fi
 
 cd "$build_dir"
 # Reconfigure explicitly on each invocation so the requested debug mode is applied.
-"$source_dir/configure" --with-pydebug 2>&1 | tee "$log_dir/configure.log"
+"$source_dir/configure" "${configure_args[@]}" 2>&1 | tee "$log_dir/configure.log"
 make -j"$build_jobs" 2>&1 | tee "$log_dir/build.log"
-./python -VV
-./python -c 'import sysconfig; assert sysconfig.get_config_var("Py_DEBUG") == 1; print("Debug build verified")'
+if ! interpreter="$(find_debug_interpreter "$build_dir")"; then
+    printf 'Build finished without a debug interpreter in %s.\n' "$build_dir" >&2
+    exit 1
+fi
+"$interpreter" -VV
+"$interpreter" -c 'import sysconfig; assert sysconfig.get_config_var("Py_DEBUG") == 1; print("Debug build verified")'
 printf '\nRun baseline tests with: bash %s/scripts/test-baseline.sh\n' "$project_root"

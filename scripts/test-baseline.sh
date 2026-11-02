@@ -2,9 +2,9 @@
 set -euo pipefail
 
 project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-interpreter="$project_root/build/debug/python"
+source "$project_root/scripts/common.sh"
 
-if [[ ! -x "$interpreter" ]]; then
+if ! interpreter="$(find_debug_interpreter "$project_root/build/debug")"; then
     printf 'Debug interpreter is not built. Run bash scripts/setup.sh first.\n' >&2
     exit 1
 fi
