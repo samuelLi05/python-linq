@@ -10,39 +10,12 @@ verified merely because implementation tasks are checked. Keep task IDs stable.
 
 | Milestone | Depends on | Implementation status | Verification status |
 | --- | --- | --- | --- |
-| M0: baseline and walkthrough | None | In progress; local macOS baseline available | Walkthrough pending |
-| M1: patch delivery | M0 | Not started | Pending |
-| M2: frontend and C runtime | M0, M1 | Not started | Pending |
+| M1: patch delivery | None | Not started | Pending |
+| M2: frontend and C runtime | M1 | Not started | Pending |
 | M3: unoptimized IR and lowering | M2 | Not started | Pending |
 | M4: CFG and data-flow analysis | M3 | Not started | Pending |
 | M5: bounded fusion | M4 | Not started | Pending |
 | M6: integration and explanation | M1-M5 | Not started | Pending |
-
-## M0: baseline and compiler walkthrough
-
-- [x] **M0.1** Pin the local CPython checkout to v3.14.0.
-- [x] **M0.2** Build and verify the unchanged local macOS debug interpreter.
-- [x] **M0.3** Run and record the six existing compiler baseline suites on macOS.
-- [x] **M0.4** Record the agreed specification and this progress checklist.
-- [ ] **M0.5** Trace a comprehension, generator expression, and lambda through
-  tokens, PEG grammar, AST, symbol table, instructions, CFG, bytecode, and runtime.
-- [ ] **M0.6** Explain source evaluation, implicit scopes, free variables, closure
-  construction, and the distinction between query and instruction CFGs.
-- [ ] **M0.V** Verify the walkthrough and record author explanations, examples,
-  commands, baseline skips/failures, and commit references before feature changes.
-
-Existing evidence, verified locally when this checklist was created:
-
-- Platform: Darwin / Apple Silicon; source tag: v3.14.0; short base commit:
-  `ebf955d`. Outer setup commit: `38817fe`.
-- `logs/setup-verification.log`: Python 3.14.0 debug build verified; 114 modules
-  checked, no failed imports. Optional `_gdbm` and `_tkinter` were missing.
-- `bash scripts/test-baseline.sh`, recorded in `logs/baseline-tests.log`:
-  `test_grammar`, `test_ast`, `test_compile`, `test_symtable`, `test_dis`, and
-  `test_tokenize` all passed; 762 tests run, three skipped.
-- Generated logs are local and ignored by Git. Preserve this summary and append
-  durable results when completing milestones. Native Linux and WSL builds/tests
-  remain unverified; simulated script checks do not satisfy that requirement.
 
 ## M1: reproducible CPython patch delivery
 
