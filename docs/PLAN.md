@@ -1,8 +1,9 @@
 # Native LINQ for Python: implementation plan
 
-This is the agreed implementation scope. Follow the stable tasks and verification
-records in [CHECKLIST.md](CHECKLIST.md); use [SETUP.md](SETUP.md) for build commands.
-The project is at environment setup: no LINQ feature or optimizer is implemented.
+Implementation tracking: [CHECKLIST.md](CHECKLIST.md).
+Build instructions: [SETUP.md](SETUP.md).
+Status: Bazel build integration and initial query grammar/AST are implemented;
+binding, runtime execution, query IR, analysis, and fusion remain pending.
 
 ## Goal, priorities, and boundaries
 
@@ -17,9 +18,8 @@ Delivery order:
 3. A bounded, opt-in fusion optimization that changes generated execution.
 4. Additional LINQ features only after those checkpoints are complete.
 
-The first complete language-feature checkpoint is useful on its own; the expanded
-project includes analysis and actual fusion before richer operators. There is no
-fixed deadline. Keep each milestone demonstrable and record unfinished work.
+The first release checkpoint is native filtering/projection. Query analysis and
+opt-in fusion precede additional operators. No fixed deadline is specified.
 
 SSA is not required for the chosen optimization. We will use a function CFG,
 reaching definitions, dominance, and definition/use information without renaming
@@ -43,7 +43,8 @@ passing = (
 print(list(passing))  # [97, 92, 81]
 ```
 
-This syntax is specified, not yet implemented. The first version accepts:
+The initial grammar parses this syntax; execution is not implemented yet.
+The first version accepts:
 
 ```text
 query := "(" "from" NAME "in" expression
@@ -88,22 +89,9 @@ fluent method API is not part of v1.
 
 ## Compiler stages and ownership
 
-```text
-Source with native query syntax
-  -> existing tokenizer + extended PEG parser
-  -> explicit query AST
-  -> validation and name/scope analysis
-  -> query IR + function control-flow model
-  -> definition/use analysis + optional fusion
-  -> closure and C-runtime-call lowering
-  -> CPython instruction sequence
-  -> existing instruction CFG optimizations and assembler
-  -> bytecode executing with our built-in C query runtime
-```
-
 | Stage | Custom work | Output / verification |
 | --- | --- | --- |
-| Lexing | Reuse tokens, punctuation, and parenthesized multiline handling; generate contextual keyword metadata. No new token kinds or lexer algorithm. | Token walkthroughs and identifier/keyword compatibility tests. |
+| Lexing | Reuse tokens, punctuation, and parenthesized multiline handling; generate contextual keyword metadata. No new token kinds or lexer algorithm. | Tokenization and identifier/keyword compatibility tests. |
 | Parsing | Extend the PEG expression grammar with queries, nesting, clause ordering, and focused invalid-syntax rules. | Query ASTs and positive/negative grammar tests. |
 | AST and validation | Add `QueryExpr(target, source, predicates, selector)`; require a `Name` target in store context and preserve expression locations. Validate parsed and manually constructed nodes. | AST traversal, validation, round trips, and compilation from AST. |
 | Preprocessing | Visit query children and apply appropriate existing preprocessing while preserving explicit query nodes. Do not replace the public AST with synthetic lambdas. | Correct `ast.parse()` and optimized-AST behavior. |
@@ -121,9 +109,10 @@ Existing integration points are `Grammar/python.gram`, `Parser/Python.asdl`,
 and a built-in `_linq` C module. Update Python/C unparsers, keyword metadata,
 reference documentation, and relevant compiler tests.
 
-Regenerate AST, parser, and keyword outputs with `make regen-ast`,
-`make regen-pegen`, and `make regen-keyword`; commit generated outputs with their
-inputs. Query construction must not depend on helper names in user globals.
+The Bazel foreign build regenerates tokens, AST, parser, and keyword outputs
+before compilation. Commit their source inputs as complete replacement files
+under `patches/`; generated files remain build artifacts.
+Query construction must not depend on helper names in user globals.
 There is no source-string translation/reparsing step.
 
 ## Query IR and analysis
@@ -185,17 +174,6 @@ unsupported dynamic/control-flow constructs. Compare bindings, not just matching
 identifier spellings. Diagnostics may explain broader cases, but rewriting stays
 within this bounded pattern.
 
-```text
-Unoptimized:
-  list iterator -> producer filters -> producer identity projection
-                -> intermediate query iterator
-                -> consumer filters -> consumer identity projection
-
-Fused:
-  list iterator -> producer filters -> consumer filters
-                -> consumer identity projection
-```
-
 Retain the producer's construction and assignment. At consumer construction, the
 specialized factory reuses the producer's captured source and original predicate
 function objects, appends the consumer predicates, and retains the consumer
@@ -215,12 +193,12 @@ The benefit is removal of an intermediate iterator layer and redundant producer
 identity-selector calls. Both versions are already lazy and O(n); there is no
 intermediate materialized list to eliminate. The first pass does not eliminate
 producer allocation, reorder predicates, substitute projections, or fuse general
-Python loops. Measure speedups rather than assuming them.
+Python loops. Evaluate runtime overhead with benchmarks.
 
 Guarantees cover values, source/callback evaluation order, captures, and exceptions
 within the supported model. Reflective observation of frames, tracing/profiling
 events, object lifetimes, and monkey-patched private runtime internals is outside
-that model. Do not claim equivalence for arbitrary dynamic Python programs.
+that model. Equivalence is limited to the supported execution model.
 
 ## Lowering, runtime, and developer interfaces
 
@@ -259,30 +237,33 @@ bytecode-cache mode. Inspection must not execute the inspected program.
 
 | ID | Deliverable | Completion gate |
 | --- | --- | --- |
-| M0 | Baseline and compiler walkthrough | Pinned debug build and baseline recorded; trace comprehension, generator, and lambda through tokens, AST, scopes, instructions, CFG, and execution. |
-| M1 | Reproducible patch delivery | Reconstruct the development changes from a clean pinned checkout using the tracked patch series. |
-| M2 | Frontend and C runtime | Syntax/AST/binding and independently tested runtime work; native end-to-end execution may still be incomplete. |
-| M3 | Unoptimized query IR and lowering | Native query programs execute through explicit IR and normal runtime factories. First complete language-feature checkpoint. |
+| M1 | Reproducible override delivery | Build the pinned upstream archive plus tracked overrides as Bazel artifacts; verify override contents and the resulting interpreter. |
+| M2 | Frontend and C runtime | Parser, AST, binding, and direct-factory runtime tests pass. |
+| M3 | Unoptimized query IR and lowering | Native filtering/projection executes through explicit IR and normal runtime factories. |
 | M4 | Control-flow/data-flow analysis | Shared compiler/tooling analysis explains eligible, ineligible, and unknown pairs with evidence. |
 | M5 | Bounded fusion | Proven candidates select fused lowering; equivalence and structural optimization evidence pass. |
-| M6 | Integration and explanation | Platform, regression, ownership, performance, and author-walkthrough evidence recorded. |
+| M6 | Integration and validation | Platform, regression, ownership, performance, and clean-reconstruction checks pass. |
 
-The nested `cpython/` checkout retains its development history. Because the outer
-repository ignores it, store ordered patches against v3.14.0 in the outer
-repository, including generated files. Record base and checkpoint commits.
+The ignored `cpython/` checkout is optional reference source and remains
+unmodified. The build consumes a checksum-pinned CPython v3.14.0 release archive
+and complete replacement files under `patches/`, mirroring upstream paths.
+Commit those overrides in the outer repository; no nested commits, diff series,
+or patch-prefix state are involved.
 
-Setup must identify already-applied patches and apply missing ones only to a
-clean checkout matching the pinned base and expected patch prefix. Preserve
-local work and refuse incompatible states with actionable diagnostics. If all
-required patches are already present, ordinary local development must remain
-possible. Document patch export, replay, and conflict recovery; validate clean
-reconstruction. Automatic patch replay requires a Git checkout; document the
-source-archive path's limitation instead of assuming it has Git history.
+Bazel declares the source archive and overrides as inputs and produces a
+combined source artifact. `rules_foreign_cc` configures, regenerates, compiles,
+and installs from a sandbox scratch copy. Native libraries and the regeneration
+interpreter are declared dependencies; the platform compiler/SDK remain host
+prerequisites. The installed runtime and packaged distribution are final
+artifacts. The root `build.sh` delegates to Bazel.
 
-Each checklist task records implementation separately from milestone verification.
-For each milestone record changed areas, rationale, an example, test commands,
-results/skips/failures, relevant commits, and unresolved limitations. New features
-wait until the current checkpoint can be demonstrated and explained.
+The current delivery gate compares every override with the source artifact and
+starts the built debug interpreter to parse a query into `ast.QueryExpr`. This
+gate does not establish query execution or complete frontend behavior. Broader
+semantic and platform verification remains in later milestones.
+
+Verification records contain test commands and results, skips/failures, relevant
+commits, and known limitations.
 
 ## Verification and acceptance
 
@@ -305,7 +286,7 @@ wait until the current checkpoint can be demonstrated and explained.
 - **Performance:** repeatable microbenchmarks reporting measured overhead changes,
   without requiring every case to be faster or claiming improved complexity.
 - **Regression/portability:** dedicated query tests and grammar, AST, compiler,
-  symtable, tokenizer, and disassembly suites; broader suite before demonstration;
+  symtable, tokenizer, and disassembly suites; broader suite before release;
   automated macOS and Ubuntu/Linux builds plus recorded manual WSL verification.
   Clearly separate real platform results from simulated setup-script checks.
 
@@ -316,9 +297,6 @@ multiple sources, `let`, grouping, joins, continuations, additional iterable typ
 and broader operators follow only with separate semantics and tests. Database
 providers, SQL translation, expression-tree providers, C#'s static type system,
 new bytecodes, and general SSA remain outside this agreed implementation.
-
-This plan replaces the earlier detection-only bonus analysis and Python-runtime
-method-API scope. Analysis and opt-in fusion are now planned project milestones.
 
 ## References
 

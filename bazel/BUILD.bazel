@@ -1,0 +1,23 @@
+load("@rules_python//python:py_binary.bzl", "py_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["cpython.bzl", "build_smoke.py"])
+
+py_binary(
+    name = "source_overlay",
+    srcs = ["source_overlay.py"],
+    python_version = "3.12",
+)
+
+py_binary(
+    name = "host_python",
+    srcs = ["host_python.py"],
+    python_version = "3.12",
+)
+
+py_binary(
+    name = "package_runtime",
+    srcs = ["package_runtime.py"],
+    python_version = "3.12",
+)

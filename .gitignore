@@ -1,7 +1,8 @@
-# CPython has its own Git history and development branch.
+# Optional pristine CPython reference checkout.
 /cpython/
 /build/
 /logs/
 /.venv/
 __pycache__/
 *.py[cod]
+/bazel-*

@@ -1,0 +1,6 @@
+build --incompatible_strict_action_env
+build --spawn_strategy=sandboxed
+build --force_pic
+common --enable_platform_specific_config
+build:macos --macos_minimum_os=11.0
+build:macos --host_macos_minimum_os=11.0

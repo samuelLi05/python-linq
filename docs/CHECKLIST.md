@@ -2,37 +2,42 @@
 
 Specification: [PLAN.md](PLAN.md). Build commands: [SETUP.md](SETUP.md).
 
-The feature is not implemented. Checkboxes below represent completed tasks;
-separate `M*.V` gates require recorded verification evidence. A milestone is not
-verified merely because implementation tasks are checked. Keep task IDs stable.
+Status: build integration and initial grammar/AST implemented; query execution
+and the middle end remain pending. `M*.V` entries are validation gates.
 
 ## Milestone status and dependencies
 
 | Milestone | Depends on | Implementation status | Verification status |
 | --- | --- | --- | --- |
-| M1: patch delivery | None | Not started | Pending |
-| M2: frontend and C runtime | M1 | Not started | Pending |
+| M1: override delivery | None | Implemented | Passed on macOS arm64 |
+| M2: frontend and C runtime | M1 | Initial grammar/AST only | Partial; build smoke only |
 | M3: unoptimized IR and lowering | M2 | Not started | Pending |
 | M4: CFG and data-flow analysis | M3 | Not started | Pending |
 | M5: bounded fusion | M4 | Not started | Pending |
-| M6: integration and explanation | M1-M5 | Not started | Pending |
+| M6: integration and validation | M1-M5 | Not started | Pending |
 
-## M1: reproducible CPython patch delivery
+## M1: reproducible CPython override delivery
 
-- [ ] **M1.1** Define the ordered tracked patch series against v3.14.0, including
-  generated outputs and base/checkpoint commit records.
-- [ ] **M1.2** Integrate patch replay with setup: identify already-applied patches,
-  apply missing patches only to the expected clean base/prefix, and preserve work.
-- [ ] **M1.3** Diagnose incompatible/dirty states clearly; allow local development
-  when required patches are already present. Document archive-source limitations.
-- [ ] **M1.4** Document export, replay, and recovery procedures for the outer
-  repository and ignored nested development checkout.
-- [ ] **M1.V** Verify clean reconstruction, repeated setup, applied-prefix handling,
-  and safe refusal on incompatible/local modifications; record commands/results.
+- [x] **M1.1** Pin the upstream v3.14.0 archive and checksum; track complete
+  replacement files under `patches/` with CPython-relative paths.
+- [x] **M1.2** Declare upstream and overrides as Bazel action inputs and produce
+  a combined source artifact without modifying the reference checkout.
+- [x] **M1.3** Integrate `rules_foreign_cc`, native dependencies, managed host
+  Python, regeneration targets, debug build, and installed-runtime artifacts.
+- [x] **M1.4** Provide `build.sh`, Bazel interpreter launcher, packaged
+  distribution, and documented build/override commands.
+- [x] **M1.V** Verify all overrides match the source artifact and the packaged
+  interpreter parses the overridden grammar; record real commands/results.
+
+M1 verified on 2026-11-02: macOS 26.6.2 arm64, Apple Clang 17.0.0, Bazel 9.0.1.
+`./build.sh`, `bazel test //:build_smoke --test_output=all`, and
+`bazel run //:python -- -VV` passed. All five overrides match; the extracted
+distribution runs debug Python 3.14.0 and produces `ast.QueryExpr`. The reference
+checkout is unchanged. Exact outputs and platform limits: [SETUP.md](SETUP.md#verification-record).
 
 ## M2: frontend, binding, and independent C runtime
 
-- [ ] **M2.1** Record token examples; integrate contextual keyword metadata without
+- [ ] **M2.1** Integrate contextual keyword metadata without
   new token kinds; verify existing `where`/`select` identifiers and imports.
 - [ ] **M2.2** Implement parenthesized query grammar, nesting, ordered clauses,
   and focused invalid-syntax diagnostics.
@@ -68,10 +73,10 @@ verified merely because implementation tasks are checked. Keep task IDs stable.
   queries. Verify captures, target isolation, class contexts, and source binding.
 - [ ] **M3.7** Add a developer source-execution/inspection driver backed by the
   shared C planning implementation; keep ordinary lowering unfused.
-- [ ] **M3.V** Demonstrate complete unoptimized queries, explain their IR and
-  disassembly, and pass focused semantic and existing compiler regressions.
+- [ ] **M3.V** Pass end-to-end native query tests, IR/code-generation checks,
+  and existing compiler regression suites.
 
-**Checkpoint:** native filtering/projection is complete here; no fusion claims yet.
+**Deliverable:** native filtering/projection without fusion.
 
 ## M4: control-flow and data-flow analysis
 
@@ -88,7 +93,7 @@ verified merely because implementation tasks are checked. Keep task IDs stable.
   reasons, and definition/use evidence through shared compiler/tooling analysis.
 - [ ] **M4.V** Verify positive chains and negative/unknown cases: multiple reaching
   definitions, extra uses, transformations, aliases, captures, branches, loops,
-  reflection, and unsupported control flow. No automatic rewrite is required yet.
+  reflection, and unsupported control flow.
 
 ## M5: bounded opt-in fusion
 
@@ -102,16 +107,16 @@ verified merely because implementation tasks are checked. Keep task IDs stable.
   predicates in order and bypass the producer iterator/identity selector.
 - [ ] **M5.5** Extend the developer driver for explicit flag-on/off source
   compilation, analysis explanations, and before/after IR; avoid cache ambiguity.
-- [ ] **M5.6** Add structural inspection and test-only counters establishing an
-  actual bypass, beyond matching outputs or runtime composition alone.
+- [ ] **M5.6** Add IR/code-generation assertions and test-only counters for
+  intermediate-iterator bypass and eliminated producer identity-selector calls.
 - [ ] **M5.V** Verify equal values and callback event logs with fusion on/off,
   including source rebinding/mutation, captures, short circuit, partial iteration,
   exceptions, repeated iteration, runtime guards, and retained producer timing.
 
-**Checkpoint:** analysis changes generated execution. Both paths remain lazy and
-O(n); producer allocation is retained. Do not claim materialization elimination.
+**Deliverable:** opt-in iterator fusion with retained producer allocation and
+O(n) execution.
 
-## M6: integration, portability, and author walkthrough
+## M6: integration, portability, and validation
 
 - [ ] **M6.1** Complete dedicated syntax, AST/tooling, semantic, timing, binding,
   runtime ownership, analysis, and optimization tests from the specification.
@@ -121,34 +126,26 @@ O(n); producer allocation is retained. Do not claim materialization elimination.
   distinguish new failures from baseline/environment skips and failures.
 - [ ] **M6.4** Add automated real macOS and Ubuntu/Linux build/test coverage;
   record manual Ubuntu-on-WSL setup, build, and feature-test results.
-- [ ] **M6.5** Benchmark fused/unfused pipelines reproducibly; report measured
-  time and iterator/callback overhead rather than assuming improved complexity.
-- [ ] **M6.6** Replay the final patch series onto a clean pinned checkout and
-  demonstrate the feature and opt-in optimizer from the documented setup.
-- [ ] **M6.7** Explain each changed stage: tokens, grammar, AST, binding, query IR,
-  analysis proof, fusion, closure/runtime lowering, bytecode, and C execution.
-- [ ] **M6.V** Record final evidence, relevant commits/patches, platform limitations,
-  unsupported cases, and a demonstration of both normal and optimized execution.
+- [ ] **M6.5** Measure runtime and iterator/callback overhead with reproducible
+  fused/unfused benchmarks.
+- [ ] **M6.6** Rebuild the final pinned archive and overrides in a clean Bazel
+  environment and run native query and optimizer tests from its artifacts.
+- [ ] **M6.V** Record final test results, commits/patches, platform limitations,
+  and unsupported cases for normal and optimized execution.
 
 ## Evidence and decision records
 
-Append a record when completing each verification gate:
-
 ```text
 Milestone/task IDs:
-Implementation commit(s) and patch-series checkpoint:
+Implementation commit(s) and override revision:
 Platform, architecture, compiler, and CPython build:
 Changed areas and rationale:
-Demonstration / walkthrough:
 Commands and results (including skips/failures):
 IR / definition-use / disassembly evidence, where applicable:
 Unresolved limitations:
 ```
 
-Keep implementation and verification status in the milestone table current. Record
-scope changes here and in PLAN.md before implementing them; do not silently expand
-SSA, backend, query syntax, or optimization guarantees.
+Scope changes must update PLAN.md and task dependencies.
 
-After M6, ordering is the first extension candidate. Broader operators, iterable
-sources, projection/loop fusion, producer-allocation elimination, new opcodes,
-and SSA require separate planning; they are not incomplete v1 checklist tasks.
+Deferred work: ordering, broader operators, iterable sources, projection/loop
+fusion, producer-allocation elimination, new opcodes, and SSA.

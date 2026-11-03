@@ -1,0 +1,131 @@
+load("@rules_foreign_cc//foreign_cc:defs.bzl", "configure_make")
+load("@rules_python//python:py_test.bzl", "py_test")
+load("//bazel:cpython.bzl", "cpython_distribution", "cpython_launcher", "cpython_native_deps", "cpython_source")
+
+package(default_visibility = ["//visibility:public"])
+
+native_deps = cpython_native_deps()
+
+config_setting(
+    name = "linux",
+    constraint_values = ["@platforms//os:linux"],
+)
+
+config_setting(
+    name = "macos",
+    constraint_values = ["@platforms//os:osx"],
+)
+
+filegroup(
+    name = "overrides",
+    srcs = glob(["patches/**"]),
+)
+
+cpython_source(
+    name = "cpython_inputs",
+    archive = "@cpython_archive//file",
+    overrides = [":overrides"],
+)
+
+filegroup(
+    name = "source_archive",
+    srcs = [":cpython_inputs"],
+    output_group = "archive",
+)
+
+CPYTHON_ENV = {
+    "PYTHON_FOR_REGEN": "$(execpath //bazel:host_python)",
+    "PKG_CONFIG_LIBDIR": "$$EXT_BUILD_DEPS$$/lib/pkgconfig",
+    "ZLIB_LIBS": "-lz",
+    "BZIP2_LIBS": "-lbz2",
+    "LIBLZMA_LIBS": "-llzma -lpthread",
+    "LIBZSTD_LIBS": "-lzstd -lpthread",
+    "LIBSQLITE3_LIBS": "-lsqlite3",
+    "LIBFFI_CFLAGS": "-I$$EXT_BUILD_DEPS$$/include",
+    "LIBFFI_LIBS": "-lffi",
+    "LIBREADLINE_LIBS": "-lreadline -lncurses",
+    "CURSES_LIBS": "-lncurses",
+    "PANEL_LIBS": "-lpanel -lncurses",
+    # These optional providers are not part of this dependency graph.
+    "py_cv_module__gdbm": "n/a",
+    "py_cv_module__dbm": "n/a",
+    "py_cv_module__tkinter": "n/a",
+}
+
+configure_make(
+    name = "cpython_build",
+    lib_name = "python-linq",
+    lib_source = ":cpython_inputs",
+    configure_in_place = True,
+    configure_options = [
+        "--with-pydebug",
+        "--disable-shared",
+        "--without-ensurepip",
+        "--with-pkg-config=no",
+        "--with-openssl=$$EXT_BUILD_DEPS$$",
+        "--with-openssl-rpath=no",
+    ],
+    args = ["-j${CPYTHON_BUILD_JOBS:-4}"],
+    env = select({
+        ":linux": CPYTHON_ENV | {"LIBS": "-ldl -lpthread -lm"},
+        # CPython's archive recipes use ar syntax; Apple's libtool uses -o.
+        ":macos": CPYTHON_ENV | {
+            "AR": "/usr/bin/ar",
+            "RANLIB": "/usr/bin/ranlib",
+            "LIBS": "-lpthread -lm",
+        },
+        "//conditions:default": CPYTHON_ENV | {"LIBS": "-lpthread -lm"},
+    }),
+    build_data = ["//bazel:host_python"],
+    deps = native_deps,
+    targets = [
+        "regen-token",
+        "regen-ast",
+        "regen-pegen",
+        "regen-keyword",
+        "all",
+        "altinstall",
+    ],
+    out_binaries = ["python3.14d"],
+    out_include_dir = "include/python3.14d",
+    out_data_dirs = ["lib/python3.14"],
+)
+
+filegroup(
+    name = "runtime",
+    srcs = [":cpython_build"],
+    output_group = "gen_dir",
+)
+
+filegroup(
+    name = "build_logs",
+    srcs = [":cpython_build"],
+    output_group = "Configure_logs",
+)
+
+cpython_distribution(
+    name = "dist",
+    runtime = ":runtime",
+)
+
+cpython_launcher(
+    name = "python",
+    runtime = ":runtime",
+)
+
+py_test(
+    name = "build_smoke",
+    size = "small",
+    srcs = ["//bazel:build_smoke.py"],
+    main = "//bazel:build_smoke.py",
+    python_version = "3.12",
+    args = [
+        "--source=$(rlocationpath :source_archive)",
+        "--distribution=$(rlocationpath :dist)",
+    ] + [
+        "--override=" + file[len("patches/"):] + "=$(rlocationpath " + file + ")"
+        for file in glob(["patches/**"])
+    ],
+    data = [":source_archive", ":dist"] + glob(["patches/**"]),
+    deps = ["@rules_python//python/runfiles"],
+)

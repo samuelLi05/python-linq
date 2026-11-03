@@ -1,43 +1,35 @@
 # Python LINQ
 
-An experimental native CPython extension for declarative queries over lists.
-The current phase is environment setup; no LINQ implementation has started.
+A CPython 3.14.0 compiler project adding native declarative queries over lists.
+The initial grammar and `QueryExpr` AST are present. Query execution, binding,
+query IR, and optimization remain to be implemented.
 
-## Workspace
+Compiler changes are tracked as complete replacement files under `patches/`,
+using CPython-relative paths. The ignored `cpython/` checkout is reference source;
+the build does not read or modify it.
 
-```text
-python-linq/
-  cpython/       # CPython v3.14.0 source; separate Git repository
-  build/debug/   # Out-of-tree debug interpreter
-  docs/          # Project plan and environment notes
-  scripts/       # Environment, setup, and baseline-test commands
-  logs/          # Configure, build, and test output
-```
+Bazel combines a checksum-pinned upstream archive with those overrides, then
+uses `rules_foreign_cc` to regenerate and build CPython in its sandbox. The
+installed interpreter and distribution archive are declared build artifacts.
 
-Setup supports macOS and Linux, including Ubuntu under WSL. See
-[the setup guide](docs/SETUP.md) for platform dependencies and troubleshooting.
+## Build and verify
 
-## Start here
-
-From the repository root, after installing the dependencies in the setup guide:
+Install Bazel 9.0.1 (or Bazelisk) and the native toolchain described in
+[SETUP.md](docs/SETUP.md), then run from the repository root:
 
 ```bash
-bash scripts/check-environment.sh
-bash scripts/setup.sh
-bash scripts/test-baseline.sh
+./build.sh
+bazel test //:build_smoke --test_output=all
+bazel run //:python -- -VV
 ```
 
-Setup obtains the pinned source if absent, creates a development branch for a
-new clone, and builds a debug interpreter. It never invokes sudo or installs over
-system Python. Run the built interpreter as `./build/debug/python` (or
-`./build/debug/python.exe` on case-insensitive filesystems, common on macOS).
-The scripts detect either name automatically.
+The smoke test compares every override with the generated source archive and
+uses the extracted distribution's debug interpreter to parse query syntax into
+`ast.QueryExpr`.
+It is a build integration check; query execution is not implemented yet.
 
-If this session still has no network access, obtain the source from a normal
-terminal using the commands in [SETUP.md](docs/SETUP.md), then retry setup.
+The distribution is `bazel-bin/python-linq.tar.gz`. Exact commands, artifact
+paths, and verification results are in [SETUP.md](docs/SETUP.md).
 
-Compiler changes belong in `cpython/`, which retains its upstream Git history.
-The outer workspace ignores that checkout and generated build/log files. The
-outer Git repository tracks project scripts and documentation.
-
-Read [the project plan](docs/PLAN.md) before starting compiler changes.
+Implementation scope: [PLAN.md](docs/PLAN.md).
+Progress: [CHECKLIST.md](docs/CHECKLIST.md).
