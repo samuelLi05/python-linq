@@ -2,19 +2,16 @@
 
 Specification: [PLAN.md](PLAN.md). Build commands: [SETUP.md](SETUP.md).
 
-Status: build integration and initial grammar/AST implemented; query execution
-and the middle end remain pending. `M*.V` entries are validation gates.
+## Milestone dependencies
 
-## Milestone status and dependencies
-
-| Milestone | Depends on | Implementation status | Verification status |
-| --- | --- | --- | --- |
-| M1: override delivery | None | Implemented | Passed on macOS arm64 |
-| M2: frontend and C runtime | M1 | Initial grammar/AST only | Partial; build smoke only |
-| M3: unoptimized IR and lowering | M2 | Not started | Pending |
-| M4: CFG and data-flow analysis | M3 | Not started | Pending |
-| M5: bounded fusion | M4 | Not started | Pending |
-| M6: integration and validation | M1-M5 | Not started | Pending |
+| Milestone | Depends on |
+| --- | --- |
+| M1: override delivery | None |
+| M2: frontend and C runtime | M1 |
+| M3: unoptimized IR and lowering | M2 |
+| M4: CFG and data-flow analysis | M3 |
+| M5: bounded fusion | M4 |
+| M6: integration and validation | M1-M5 |
 
 ## M1: reproducible CPython override delivery
 
@@ -26,32 +23,30 @@ and the middle end remain pending. `M*.V` entries are validation gates.
   Python, regeneration targets, debug build, and installed-runtime artifacts.
 - [x] **M1.4** Provide `build.sh`, Bazel interpreter launcher, packaged
   distribution, and documented build/override commands.
-- [x] **M1.V** Verify all overrides match the source artifact and the packaged
-  interpreter parses the overridden grammar; record real commands/results.
-
-M1 verified on 2026-11-02: macOS 26.6.2 arm64, Apple Clang 17.0.0, Bazel 9.0.1.
-`./build.sh`, `bazel test //:build_smoke --test_output=all`, and
-`bazel run //:python -- -VV` passed. All five overrides match; the extracted
-distribution runs debug Python 3.14.0 and produces `ast.QueryExpr`. The reference
-checkout is unchanged. Exact outputs and platform limits: [SETUP.md](SETUP.md#verification-record).
+- [x] **M1.5** Export the native interpreter and standard library into ignored
+  `build/python-linq/`, provide the `build/python` launcher, and retain
+  `build/python-linq.tar.gz`; refresh these outputs after successful builds.
+- [x] **M1.V** Verify all overrides match the source artifact, functional checks
+  pass against the exported and packaged interpreters, repeated export succeeds,
+  and the local interpreter runs independently of Bazel runfiles.
 
 ## M2: frontend, binding, and independent C runtime
 
-M2-M3 must follow the operator-extension boundaries in
-[PLAN.md](PLAN.md#modularity-requirements-for-the-basic-implementation).
+Architecture: [operator-extension boundaries](PLAN.md#modularity-requirements-for-the-basic-implementation).
 
-- [ ] **M2.1** Integrate contextual keyword metadata without
+- [x] **M2.1** Integrate contextual keyword metadata without
   new token kinds; verify existing `where`/`select` identifiers and imports.
-- [ ] **M2.2** Implement parenthesized query grammar, nesting, ordered clauses,
+- [x] **M2.2** Implement parenthesized query grammar, nesting, ordered clauses,
   and focused invalid-syntax diagnostics.
-- [ ] **M2.3** Add `QueryExpr(target, source, predicates, selector)`, locations,
+- [x] **M2.3** Add `QueryExpr(target, source, predicates, selector)`, locations,
   AST validation, and explicit rejection of excluded targets/expressions.
-- [ ] **M2.4** Traverse queries in preprocessing while preserving public AST
+- [x] **M2.4** Traverse queries in preprocessing while preserving public AST
   structure for ordinary/optimized AST requests.
-- [ ] **M2.5** Implement source binding in the surrounding scope and implicit
+- [x] **M2.5** Implement source binding in the surrounding scope and implicit
   predicate/selector function scopes using stable original-expression keys.
-- [ ] **M2.6** Update Python/C unparsing, AST traversal/round trips, compiler
-  tooling tests, reference documentation, and generated files.
+- [x] **M2.6a** Implement Python/C unparsing, AST traversal/round trips, and
+  compiler tooling tests.
+- [ ] **M2.6b** Document query syntax and public AST interfaces.
 - [ ] **M2.7** Implement the normal private C query factory, immutable native query
   type, per-interpreter state, and independent query iterators.
 - [ ] **M2.8** Implement list/query source checks, deferred ordered execution,
@@ -136,25 +131,19 @@ O(n) execution.
 - [ ] **M6.V** Record final test results, commits/patches, platform limitations,
   and unsupported cases for normal and optimized execution.
 
-## Evidence and decision records
+## Deferred work
 
-```text
-Milestone/task IDs:
-Implementation commit(s) and override revision:
-Platform, architecture, compiler, and CPython build:
-Changed areas and rationale:
-Commands and results (including skips/failures):
-IR / definition-use / disassembly evidence, where applicable:
-Unresolved limitations:
-```
+Specification: [deferred extensions](PLAN.md#deferred-extensions).
 
-Scope changes must update PLAN.md and task dependencies.
-
-Deferred operator families: multiple sources/flattening; bindings/continuations;
-sorting; grouping/joins; set operations; quantifiers; aggregation; partitioning;
-element selection; concatenation/sequence comparison. Inventory and modularity
-requirements: [PLAN.md](PLAN.md#deferred-extensions). Each family gets its own
-dependencies and acceptance criteria when scheduled; M4-M6 are not blanket gates.
-
-Other deferred work: iterable sources, projection/loop fusion, and
-producer-allocation elimination. New opcodes and general SSA remain out of scope.
+- [ ] Multiple sources and flattening.
+- [ ] Query bindings and continuations.
+- [ ] Sorting.
+- [ ] Grouping and joins.
+- [ ] Set operations.
+- [ ] Quantifiers.
+- [ ] Aggregation.
+- [ ] Partitioning.
+- [ ] Element selection.
+- [ ] Concatenation and sequence comparison.
+- [ ] Additional iterable sources.
+- [ ] Projection/loop fusion and producer-allocation elimination.
