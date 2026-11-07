@@ -16,10 +16,13 @@ Delivery order:
 1. Native filtering/projection with correct deferred execution.
 2. Query-merge analysis with explanations.
 3. A bounded, opt-in fusion optimization that changes generated execution.
-4. Additional LINQ features only after those checkpoints are complete.
+4. Additional operator families as independent extensions to the core pipeline.
 
-The first release checkpoint is native filtering/projection. Query analysis and
-opt-in fusion precede additional operators. No fixed deadline is specified.
+The first release checkpoint is native filtering/projection. Analysis and fusion
+remain the next delivery priorities, but are not architectural prerequisites for
+every additional operator. Each extension depends on the core capabilities it
+uses; the deferred inventory and extension requirements are specified below.
+No fixed deadline is specified.
 
 SSA is not required for the chosen optimization. We will use a function CFG,
 reaching definitions, dominance, and definition/use information without renaming
@@ -292,9 +295,68 @@ commits, and known limitations.
 
 ## Deferred extensions
 
-After M6, re-scope one extension at a time. Ordering is the first candidate;
-multiple sources, `let`, grouping, joins, continuations, additional iterable types,
-and broader operators follow only with separate semantics and tests. Database
+The following families are deferred implementation work, not excluded features.
+Filtering (`Where`) and projection (`Select`) remain the basic deliverable.
+Ordering is the first suggested extension; each family can be scoped and added
+independently once its required core execution and binding capabilities exist.
+Neither completion of every other family nor M4-M6 is a blanket prerequisite.
+
+| Family | Deferred functionality |
+| --- | --- |
+| Multiple sources and flattening | Additional `from` clauses / `SelectMany`. |
+| Query bindings and continuations | `let` and query-body `into` continuations. |
+| Sorting | `OrderBy`, `OrderByDescending`, `ThenBy`, `ThenByDescending`; multiple ordered keys. |
+| Grouping and joins | `GroupBy`, `Join`, `GroupJoin`; `group … by …` and group-join `into`. |
+| Set operations | `Distinct`, `Union`, `Intersect`, `Except`. |
+| Quantifiers | `Any`, `All`, `Contains`. |
+| Aggregation | `Count`, `Sum`, `Min`, `Max`, `Average`, `Aggregate`. |
+| Partitioning | `Take`, `Skip`, `TakeWhile`, `SkipWhile`. |
+| Element selection | `First`, `Last`, `Single`, `ElementAt`, including default-returning variants. |
+| Concatenation and sequence comparison | `Concat`, `SequenceEqual`. |
+
+These names identify capabilities, not a commitment to a public fluent API or
+one new keyword per operator. C# query clauses and its broader method-based
+operator surface must be distinguished. Each family's Python syntax or invocation
+form is specified before its implementation; the v1 syntax remains unchanged.
+
+### Modularity requirements for the basic implementation
+
+- Normalize frontend query nodes into an ordered sequence of typed IR operators.
+  Initially implement only source, filter, and projection. Preserve operator
+  order and allow additional operator kinds without changing existing kinds.
+- Keep AST construction, binding, IR validation, lowering, and native execution
+  behind distinct operator-specific handlers. Future clauses can introduce AST
+  types and binding rules without extending unrelated filtering code. The current
+  `QueryExpr` fields are the basic syntax representation, not a universal schema
+  into which all future operators must fit.
+- Give each operator explicit input/result categories: sequence, ordered
+  sequence, grouping, scalar, or Boolean. Keep streaming, buffering, and terminal
+  execution distinct; do not assume every operator returns another lazy iterator.
+- Keep runtime ownership, callback invocation, iteration, and error propagation
+  reusable. Add native implementations per family rather than a single combined
+  filtering/projection execution loop that every extension must replace.
+- Treat `_linq._query` and `_linq._fused_query` as the initial private lowering
+  entry points. Keep their implementation separate from the internal operator
+  representation so later families can add factory/terminal entry points without
+  redesigning existing query execution.
+- Make fusion opt-in for explicitly supported operator patterns. Operators without
+  a fusion proof remain optimization barriers and execute normally; they must
+  never be skipped, reordered, or rejected merely because fusion cannot handle
+  them. The first filter-fusion pass does not need to optimize future families.
+- Before enabling a family, specify its syntax, binding effects, evaluation
+  timing, buffering, short-circuit behavior, ordering, duplicates, equality/key
+  rules, empty-input results, and exceptions. Record concrete dependencies and
+  acceptance cases for that family. Add its AST/IR/lowering/runtime support as one
+  extension, with focused verification when that work is authorized.
+
+The basic implementation must meet these extension boundaries without building
+unused operator implementations or a general plugin framework. New operators
+must compose with existing source/filter/projection execution without rewriting
+their semantics. This requirement applies during M2-M3, not after their design
+has been fixed around the initial subset.
+
+Additional iterable sources and broader optimizations (projection/loop fusion
+and producer-allocation elimination) remain separate deferred work. Database
 providers, SQL translation, expression-tree providers, C#'s static type system,
 new bytecodes, and general SSA remain outside this agreed implementation.
 

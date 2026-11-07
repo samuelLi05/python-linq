@@ -37,6 +37,9 @@ checkout is unchanged. Exact outputs and platform limits: [SETUP.md](SETUP.md#ve
 
 ## M2: frontend, binding, and independent C runtime
 
+M2-M3 must follow the operator-extension boundaries in
+[PLAN.md](PLAN.md#modularity-requirements-for-the-basic-implementation).
+
 - [ ] **M2.1** Integrate contextual keyword metadata without
   new token kinds; verify existing `where`/`select` identifiers and imports.
 - [ ] **M2.2** Implement parenthesized query grammar, nesting, ordered clauses,
@@ -147,5 +150,11 @@ Unresolved limitations:
 
 Scope changes must update PLAN.md and task dependencies.
 
-Deferred work: ordering, broader operators, iterable sources, projection/loop
-fusion, producer-allocation elimination, new opcodes, and SSA.
+Deferred operator families: multiple sources/flattening; bindings/continuations;
+sorting; grouping/joins; set operations; quantifiers; aggregation; partitioning;
+element selection; concatenation/sequence comparison. Inventory and modularity
+requirements: [PLAN.md](PLAN.md#deferred-extensions). Each family gets its own
+dependencies and acceptance criteria when scheduled; M4-M6 are not blanket gates.
+
+Other deferred work: iterable sources, projection/loop fusion, and
+producer-allocation elimination. New opcodes and general SSA remain out of scope.
