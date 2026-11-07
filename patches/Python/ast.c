@@ -303,7 +303,7 @@ validate_expr(expr_ty exp, expr_context_ty ctx)
     COMP(SetComp)
     COMP(GeneratorExp)
 #undef COMP
-    /* BEGIN LINQ override: validate the target and child expression contexts. */
+    /* BEGIN LINQ override: query validation. */
     case QueryExpr_kind:
         if (exp->v.QueryExpr.target == NULL ||
                 exp->v.QueryExpr.target->kind != Name_kind) {

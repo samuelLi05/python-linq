@@ -877,7 +877,7 @@ atom[expr_ty]:
     | 'None' { _PyAST_Constant(Py_None, NULL, EXTRA) }
     | &(STRING|FSTRING_START|TSTRING_START) strings
     | NUMBER
-    # BEGIN LINQ override: recognize parenthesized queries as expressions.
+    # BEGIN LINQ override: query atoms.
     | &'(' (query_expr | tuple | group | genexp)
     # END LINQ override
     | &'[' (list | listcomp)
@@ -888,8 +888,7 @@ group[expr_ty]:
     | '(' a=(yield_expr | named_expression) ')' { a }
     | invalid_group
 
-# BEGIN LINQ override: query clauses construct a dedicated QueryExpr AST.
-# Double-quoted where/select are soft keywords; existing tokens are reused.
+# BEGIN LINQ override: query expressions.
 
 query_expr[expr_ty]:
     | '(' 'from' target=NAME 'in' source=expression predicates[asdl_expr_seq*]=query_where* "select" selector=expression ')' {
@@ -899,9 +898,23 @@ query_expr[expr_ty]:
             predicates,
             selector,
             EXTRA) }
+    | invalid_query_unsupported_clause
 
 query_where[expr_ty]:
     | "where" predicate=expression { predicate }
+
+# Soft keywords for unsupported clauses.
+query_pending_keyword[expr_ty]:
+    | "let"
+    | "orderby"
+    | "join"
+    | "on"
+    | "equals"
+    | "group"
+    | "by"
+    | "into"
+    | "ascending"
+    | "descending"
 # END LINQ override
 
 # Lambda functions
@@ -1211,6 +1224,22 @@ func_type_comment[Token*]:
 # ========================= START OF INVALID RULES =======================
 
 # From here on, there are rules for invalid syntax with specialised error messages
+
+# BEGIN LINQ override: unsupported-clause diagnostics.
+# Suppress generic expression errors while locating the clause.
+query_pending_prefix_without_invalid:
+    | '(' 'from' NAME 'in' expression query_where* ["select" expression]
+
+invalid_query_unsupported_clause:
+    | query_pending_prefix_without_invalid a=query_pending_keyword {
+        RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a,
+            "LINQ keyword '%U' is recognized, but its query clause is not implemented yet",
+            a->v.Name.id) }
+    | query_pending_prefix_without_invalid a='from' {
+        RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a,
+            "additional LINQ 'from' clauses are not implemented yet") }
+# END LINQ override
+
 invalid_arguments:
     | ((','.(starred_expression | ( assignment_expression | expression !':=') !'=')+ ',' kwargs) | kwargs) a=',' ','.(starred_expression !'=')+ {
         RAISE_SYNTAX_ERROR_STARTING_FROM(a, "iterable argument unpacking follows keyword argument unpacking") }
