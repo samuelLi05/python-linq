@@ -303,6 +303,7 @@ validate_expr(expr_ty exp, expr_context_ty ctx)
     COMP(SetComp)
     COMP(GeneratorExp)
 #undef COMP
+    /* BEGIN LINQ override: validate the target and child expression contexts. */
     case QueryExpr_kind:
         if (exp->v.QueryExpr.target == NULL ||
                 exp->v.QueryExpr.target->kind != Name_kind) {
@@ -314,6 +315,7 @@ validate_expr(expr_ty exp, expr_context_ty ctx)
             validate_exprs(exp->v.QueryExpr.predicates, Load, 0) &&
             validate_expr(exp->v.QueryExpr.selector, Load);
         break;
+    /* END LINQ override */
     case DictComp_kind:
         ret = validate_comprehension(exp->v.DictComp.generators) &&
             validate_expr(exp->v.DictComp.key, Load) &&

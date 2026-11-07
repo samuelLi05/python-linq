@@ -5207,8 +5207,10 @@ codegen_visit_expr(compiler *c, expr_ty e)
         return codegen_set(c, e);
     case GeneratorExp_kind:
         return codegen_genexp(c, e);
+    /* BEGIN LINQ override: reject execution until query lowering is implemented. */
     case QueryExpr_kind:
         return _PyCompile_Error(c, loc, "LINQ query execution is not implemented yet");
+    /* END LINQ override */
     case ListComp_kind:
         return codegen_listcomp(c, e);
     case SetComp_kind:

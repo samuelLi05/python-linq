@@ -561,12 +561,14 @@ astfold_expr(expr_ty node_, PyArena *ctx_, _PyASTPreprocessState *state)
         CALL(astfold_expr, expr_ty, node_->v.GeneratorExp.elt);
         CALL_SEQ(astfold_comprehension, comprehension, node_->v.GeneratorExp.generators);
         break;
+    /* BEGIN LINQ override: preprocess children while retaining the query node. */
     case QueryExpr_kind:
         CALL(astfold_expr, expr_ty, node_->v.QueryExpr.target);
         CALL(astfold_expr, expr_ty, node_->v.QueryExpr.source);
         CALL_SEQ(astfold_expr, expr, node_->v.QueryExpr.predicates);
         CALL(astfold_expr, expr_ty, node_->v.QueryExpr.selector);
         break;
+    /* END LINQ override */
     case Await_kind:
         CALL(astfold_expr, expr_ty, node_->v.Await.value);
         break;
