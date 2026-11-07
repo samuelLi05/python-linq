@@ -310,6 +310,12 @@ validate_expr(expr_ty exp, expr_context_ty ctx)
             PyErr_SetString(PyExc_ValueError, "QueryExpr target must be a Name");
             return 0;
         }
+        if (exp->v.QueryExpr.source == NULL ||
+                exp->v.QueryExpr.selector == NULL) {
+            PyErr_SetString(PyExc_ValueError,
+                            "QueryExpr requires source and selector expressions");
+            return 0;
+        }
         ret = validate_expr(exp->v.QueryExpr.target, Store) &&
             validate_expr(exp->v.QueryExpr.source, Load) &&
             validate_exprs(exp->v.QueryExpr.predicates, Load, 0) &&

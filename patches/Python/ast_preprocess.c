@@ -3,6 +3,7 @@
 #include "pycore_ast.h"           // _PyAST_GetDocString()
 #include "pycore_c_array.h"       // _Py_CArray_EnsureCapacity()
 #include "pycore_format.h"        // F_LJUST
+#include "pycore_pyerrors.h"      // _PyErr_RaiseSyntaxError()
 #include "pycore_runtime.h"       // _Py_STR()
 #include "pycore_unicodeobject.h" // _PyUnicode_EqualToASCIIString()
 
@@ -19,6 +20,10 @@ typedef struct {
     int optimize;
     int ff_features;
     int syntax_check_only;
+
+    /* BEGIN LINQ override: query validation context. */
+    int query_depth;
+    /* END LINQ override */
 
     _Py_c_array_t cf_finally;       /* context for PEP 765 check */
     int cf_finally_used;
@@ -402,6 +407,59 @@ static int astfold_match_case(match_case_ty node_, PyArena *ctx_, _PyASTPreproce
 static int astfold_pattern(pattern_ty node_, PyArena *ctx_, _PyASTPreprocessState *state);
 static int astfold_type_param(type_param_ty node_, PyArena *ctx_, _PyASTPreprocessState *state);
 
+/* BEGIN LINQ override: query validation. */
+static int
+query_syntax_error(_PyASTPreprocessState *state, expr_ty node, const char *text)
+{
+    PyObject *message = PyUnicode_FromString(text);
+    if (message != NULL) {
+        _PyErr_RaiseSyntaxError(message, state->filename,
+                               node->lineno, node->col_offset + 1,
+                               node->end_lineno, node->end_col_offset + 1);
+        Py_DECREF(message);
+    }
+    return 0;
+}
+
+static int
+validate_query_expression(expr_ty node, _PyASTPreprocessState *state)
+{
+    if (!state->query_depth) {
+        return 1;
+    }
+    switch (node->kind) {
+    case NamedExpr_kind:
+        return query_syntax_error(state, node,
+            "assignment expressions are not allowed in LINQ queries");
+    case Await_kind:
+        return query_syntax_error(state, node,
+            "'await' is not allowed in LINQ queries");
+    case Yield_kind:
+    case YieldFrom_kind:
+        return query_syntax_error(state, node,
+            "'yield' is not allowed in LINQ queries");
+    default:
+        return 1;
+    }
+}
+
+static int
+astfold_query(expr_ty node, PyArena *arena, _PyASTPreprocessState *state)
+{
+    state->query_depth++;
+    int ok = astfold_expr(node->v.QueryExpr.target, arena, state) &&
+             astfold_expr(node->v.QueryExpr.source, arena, state);
+    for (Py_ssize_t i = 0; ok && i < asdl_seq_LEN(node->v.QueryExpr.predicates); i++) {
+        ok = astfold_expr(asdl_seq_GET(node->v.QueryExpr.predicates, i), arena, state);
+    }
+    if (ok) {
+        ok = astfold_expr(node->v.QueryExpr.selector, arena, state);
+    }
+    state->query_depth--;
+    return ok;
+}
+/* END LINQ override */
+
 #define CALL(FUNC, TYPE, ARG) \
     if (!FUNC((ARG), ctx_, state)) \
         return 0;
@@ -515,6 +573,11 @@ astfold_mod(mod_ty node_, PyArena *ctx_, _PyASTPreprocessState *state)
 static int
 astfold_expr(expr_ty node_, PyArena *ctx_, _PyASTPreprocessState *state)
 {
+    /* BEGIN LINQ override: check before folding child expressions. */
+    if (!validate_query_expression(node_, state)) {
+        return 0;
+    }
+    /* END LINQ override */
     ENTER_RECURSIVE();
     switch (node_->kind) {
     case BoolOp_kind:
@@ -563,10 +626,7 @@ astfold_expr(expr_ty node_, PyArena *ctx_, _PyASTPreprocessState *state)
         break;
     /* BEGIN LINQ override: query traversal. */
     case QueryExpr_kind:
-        CALL(astfold_expr, expr_ty, node_->v.QueryExpr.target);
-        CALL(astfold_expr, expr_ty, node_->v.QueryExpr.source);
-        CALL_SEQ(astfold_expr, expr, node_->v.QueryExpr.predicates);
-        CALL(astfold_expr, expr_ty, node_->v.QueryExpr.selector);
+        CALL(astfold_query, expr_ty, node_);
         break;
     /* END LINQ override */
     case Await_kind:
@@ -655,6 +715,12 @@ astfold_keyword(keyword_ty node_, PyArena *ctx_, _PyASTPreprocessState *state)
 static int
 astfold_comprehension(comprehension_ty node_, PyArena *ctx_, _PyASTPreprocessState *state)
 {
+    /* BEGIN LINQ override: synchronous query comprehensions. */
+    if (state->query_depth && node_->is_async) {
+        return query_syntax_error(state, node_->iter,
+            "async comprehensions are not allowed in LINQ queries");
+    }
+    /* END LINQ override */
     CALL(astfold_expr, expr_ty, node_->target);
     CALL(astfold_expr, expr_ty, node_->iter);
     CALL_SEQ(astfold_expr, expr, node_->ifs);

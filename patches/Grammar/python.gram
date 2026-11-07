@@ -891,6 +891,10 @@ group[expr_ty]:
 # BEGIN LINQ override: query expressions.
 
 query_expr[expr_ty]:
+    | invalid_query
+    | query_valid
+
+query_valid[expr_ty]:
     | '(' 'from' target=NAME 'in' source=expression predicates[asdl_expr_seq*]=query_where* "select" selector=expression ')' {
         _PyAST_QueryExpr(
             CHECK(expr_ty, _PyPegen_set_expr_context(p, target, Store)),
@@ -898,7 +902,6 @@ query_expr[expr_ty]:
             predicates,
             selector,
             EXTRA) }
-    | invalid_query_unsupported_clause
 
 query_where[expr_ty]:
     | "where" predicate=expression { predicate }
@@ -1225,19 +1228,68 @@ func_type_comment[Token*]:
 
 # From here on, there are rules for invalid syntax with specialised error messages
 
-# BEGIN LINQ override: unsupported-clause diagnostics.
-# Suppress generic expression errors while locating the clause.
-query_pending_prefix_without_invalid:
-    | '(' 'from' NAME 'in' expression query_where* ["select" expression]
+# BEGIN LINQ override: query diagnostics.
+query_expression_without_invalid[expr_ty]:
+    | expression
 
-invalid_query_unsupported_clause:
-    | query_pending_prefix_without_invalid a=query_pending_keyword {
+query_target_without_invalid[expr_ty]:
+    | star_targets
+
+query_valid_without_invalid[expr_ty]:
+    | query_valid
+
+invalid_query:
+    | !query_valid_without_invalid invalid_query_header
+
+invalid_query_header:
+    | '(' 'from' !(NAME 'in') a=query_target_without_invalid 'in' {
         RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a,
-            "LINQ keyword '%U' is recognized, but its query clause is not implemented yet",
+            "LINQ query target must be a single identifier") }
+    | '(' 'from' !NAME {
+        RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN("expected an identifier after LINQ 'from'") }
+    | '(' 'from' NAME !'in' {
+        RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN("expected 'in' after LINQ query target") }
+    | '(' 'from' NAME 'in' &(')' | ENDMARKER) {
+        RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN("expected a source expression after LINQ 'in'") }
+    | '(' 'from' NAME 'in' "select" query_expression_without_invalid ')' {
+        RAISE_SYNTAX_ERROR("expected a source expression before LINQ 'select'") }
+    | '(' 'from' NAME 'in' query_expression_without_invalid invalid_query_body
+
+invalid_query_body:
+    | "where" &(')' | ENDMARKER | "where" | "select") {
+        RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN("expected a predicate after LINQ 'where'") }
+    | "where" query_expression_without_invalid invalid_query_body
+    | "select" &(')' | ENDMARKER) {
+        RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN("expected a selector after LINQ 'select'") }
+    | "select" query_expression_without_invalid invalid_query_projection
+    | a=query_pending_keyword {
+        RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a,
+            "LINQ clause keyword '%U' is not supported yet",
             a->v.Name.id) }
-    | query_pending_prefix_without_invalid a='from' {
+    | a='from' {
         RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a,
             "additional LINQ 'from' clauses are not implemented yet") }
+    | &(')' | ENDMARKER) {
+        RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN("expected a final LINQ 'select' clause") }
+    | !("where" | "select" | ')' | ENDMARKER) {
+        RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN("expected LINQ 'where' or 'select' clause") }
+
+invalid_query_projection:
+    | a="where" {
+        RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a,
+            "LINQ 'where' clauses must precede 'select'") }
+    | a="select" {
+        RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a,
+            "LINQ query must contain exactly one 'select' clause") }
+    | a=query_pending_keyword {
+        RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a,
+            "LINQ clause keyword '%U' is not supported yet",
+            a->v.Name.id) }
+    | a='from' {
+        RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a,
+            "additional LINQ 'from' clauses are not implemented yet") }
+    | !')' {
+        RAISE_SYNTAX_ERROR_ON_NEXT_TOKEN("expected ')' after LINQ selector") }
 # END LINQ override
 
 invalid_arguments:

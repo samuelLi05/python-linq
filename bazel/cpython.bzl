@@ -203,7 +203,7 @@ def _cpython_launcher_impl(ctx):
         executable,
         """#!/usr/bin/env bash
 set -euo pipefail
-runfiles="${RUNFILES_DIR:-$0.runfiles}"
+runfiles="$(cd -- "${RUNFILES_DIR:-$0.runfiles}" && pwd)"
 runtime="$runfiles/%s"
 if [[ ! -x "$runtime/bin/python3.14d" ]]; then
     printf 'Runtime not found in runfiles: %%s\\n' "$runtime" >&2

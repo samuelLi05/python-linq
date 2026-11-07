@@ -122,10 +122,11 @@ py_test(
     args = [
         "--source=$(rlocationpath :source_archive)",
         "--distribution=$(rlocationpath :dist)",
+        "--tests=$(rlocationpath tests/test_queries.py)",
     ] + [
         "--override=" + file[len("patches/"):] + "=$(rlocationpath " + file + ")"
         for file in glob(["patches/**"])
     ],
-    data = [":source_archive", ":dist"] + glob(["patches/**"]),
+    data = [":source_archive", ":dist", "tests/test_queries.py"] + glob(["patches/**"]),
     deps = ["@rules_python//python/runfiles"],
 )
