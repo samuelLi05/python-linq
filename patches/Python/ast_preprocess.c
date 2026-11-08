@@ -561,9 +561,21 @@ astfold_mod(mod_ty node_, PyArena *ctx_, _PyASTPreprocessState *state)
     case Expression_kind:
         CALL(astfold_expr, expr_ty, node_->v.Expression.body);
         break;
-    // The following top level nodes don't participate in constant folding
-    case FunctionType_kind:
-        break;
+    /* BEGIN LINQ override: validate function-type expressions without folding. */
+    case FunctionType_kind: {
+        int previous = state->syntax_check_only;
+        state->syntax_check_only = 1;
+        int ok = 1;
+        for (Py_ssize_t i = 0; ok && i < asdl_seq_LEN(node_->v.FunctionType.argtypes); i++) {
+            ok = astfold_expr(asdl_seq_GET(node_->v.FunctionType.argtypes, i), ctx_, state);
+        }
+        if (ok) {
+            ok = astfold_expr(node_->v.FunctionType.returns, ctx_, state);
+        }
+        state->syntax_check_only = previous;
+        return ok;
+    }
+    /* END LINQ override */
     // No default case, so the compiler will emit a warning if new top level
     // compilation nodes are added without being handled here
     }

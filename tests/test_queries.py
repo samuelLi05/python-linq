@@ -1,10 +1,14 @@
 """Functional checks for the current query frontend and built interpreter."""
 
 import ast
+import gc
 import subprocess
 import symtable
 import sys
 import unittest
+import weakref
+
+from _linq import _query
 
 
 class QueryTests(unittest.TestCase):
@@ -178,6 +182,18 @@ class Queries:
 
 
 class QueryToolingTests(unittest.TestCase):
+    def test_function_type_query_validation(self):
+        for source in (
+            '(int) -> (from x in values select (captured := x))',
+            '((from x in values select (await f()))) -> int',
+        ):
+            with self.subTest(source=source):
+                with self.assertRaises(SyntaxError):
+                    ast.parse(source, mode='func_type')
+        source = '(int) -> (from x in values select x)'
+        tree = ast.parse(source, mode='func_type')
+        self.assertEqual(ast.dump(ast.parse(ast.unparse(tree), mode='func_type')), ast.dump(tree))
+
     def test_unparse_round_trips(self):
         for source in (
             '(from x in values select x)',
@@ -232,6 +248,309 @@ class QueryToolingTests(unittest.TestCase):
                 self.assertEqual(function(42), 42)
                 restored = ast.parse(function.__annotations__['value'], mode='eval')
                 self.assertEqual(ast.dump(restored), ast.dump(ast.parse(query, mode='eval')))
+
+
+class QueryRuntimeTests(unittest.TestCase):
+    def test_results_preserve_order_and_duplicates(self):
+        for values, expected in (([], []), ([3, 1, 3], [6, 2, 6])):
+            with self.subTest(values=values):
+                query = _query(values, (), lambda x: x * 2, True)
+                self.assertEqual(list(query), expected)
+
+    def test_deferred_callbacks_and_short_circuit_order(self):
+        events = []
+
+        def positive(x):
+            events.append(('positive', x))
+            return x > 0
+
+        def even(x):
+            events.append(('even', x))
+            return x % 2 == 0
+
+        def project(x):
+            events.append(('project', x))
+            return x * 10
+
+        query = _query([0, 1, 2, 4], (positive, even), project, False)
+        self.assertEqual(events, [])
+        iterator = iter(query)
+        self.assertEqual(events, [])
+        self.assertEqual(next(iterator), 20)
+        self.assertEqual(events, [('positive', 0), ('positive', 1), ('even', 1),
+                                  ('positive', 2), ('even', 2), ('project', 2)])
+        self.assertEqual(list(iterator), [40])
+
+    def test_independent_and_repeated_iterations(self):
+        query = _query([1, 2, 3], (), lambda x: x * 2, False)
+        first, second = iter(query), iter(query)
+        self.assertEqual(next(first), 2)
+        self.assertEqual(next(second), 2)
+        self.assertEqual(list(first), [4, 6])
+        self.assertEqual(list(second), [4, 6])
+        self.assertEqual(list(query), [2, 4, 6])
+
+    def test_source_retention_and_mutation(self):
+        source = [1, 2]
+        original = source
+        query = _query(source, (), lambda x: x, True)
+        source = [99]
+        iterator = iter(query)
+        self.assertEqual(next(iterator), 1)
+        original.append(3)
+        self.assertEqual(list(iterator), [2, 3])
+        self.assertEqual(list(query), [1, 2, 3])
+        original.clear()
+        self.assertEqual(list(query), [])
+
+    def test_callbacks_observe_late_bound_values(self):
+        limit = 1
+        query = _query([1, 2, 3], (lambda x: x > limit,), lambda x: x + limit, False)
+        limit = 2
+        self.assertEqual(list(query), [5])
+
+    def test_list_subclass_iteration_is_honored(self):
+        events = []
+
+        class Source(list):
+            def __iter__(self):
+                events.append('iter')
+                return iter([3, 1])
+
+        query = _query(Source([1, 2]), (), lambda x: x, True)
+        self.assertEqual(events, [])
+        iterator = iter(query)
+        self.assertEqual(events, ['iter'])
+        self.assertEqual(list(iterator), [3, 1])
+
+    def test_query_sources_keep_parent_projection(self):
+        events = []
+
+        def project(x):
+            events.append(x)
+            return x + 10
+
+        parent = _query([1, 2], (), project, False)
+        child = _query(parent, (lambda x: x > 11,), lambda x: x * 2, False)
+        self.assertEqual(events, [])
+        self.assertEqual(list(child), [24])
+        self.assertEqual(events, [1, 2])
+        self.assertEqual(list(parent), [11, 12])
+
+    def test_invalid_factory_inputs_fail_immediately(self):
+        events = []
+
+        def callback(x):
+            events.append(x)
+            return x
+
+        for args in (
+            ((), (), callback, False), (iter([]), (), callback, False),
+            (None, (), callback, False), ([], [], callback, False),
+            ([], (None,), callback, False), ([], (), None, False),
+            ([], (), callback, 1), ([], (), callback),
+        ):
+            with self.subTest(args=args):
+                with self.assertRaises(TypeError):
+                    _query(*args)
+        self.assertEqual(events, [])
+
+    def test_callback_errors_close_only_the_affected_iterator(self):
+        calls = 0
+        failure = ValueError('callback failed')
+
+        def predicate(x):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise failure
+            return True
+
+        query = _query([1, 2], (predicate,), lambda x: x, True)
+        failed, other = iter(query), iter(query)
+        with self.assertRaises(ValueError) as raised:
+            next(failed)
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(next(failed, 'done'), 'done')
+        self.assertEqual(list(other), [1, 2])
+        self.assertEqual(list(query), [1, 2])
+
+    def test_predicate_truth_and_selector_exceptions(self):
+        for exception_type in (ValueError, StopIteration):
+            for phase in ('predicate', 'truth', 'selector'):
+                with self.subTest(exception=exception_type, phase=phase):
+                    failure = exception_type('failed')
+
+                    def fail(x=None):
+                        raise failure
+
+                    class Truth:
+                        def __bool__(self):
+                            return fail()
+
+                    predicate = fail if phase == 'predicate' else lambda x: Truth()
+                    predicates = () if phase == 'selector' else (predicate,)
+                    selector = fail if phase == 'selector' else lambda x: x
+                    iterator = iter(_query([1], predicates, selector, False))
+                    expected = RuntimeError if exception_type is StopIteration else ValueError
+                    with self.assertRaises(expected) as raised:
+                        next(iterator)
+                    if exception_type is StopIteration:
+                        self.assertIs(raised.exception.__cause__, failure)
+                    else:
+                        self.assertIs(raised.exception, failure)
+                    self.assertEqual(next(iterator, 'done'), 'done')
+
+    def test_source_errors_and_exhaustion(self):
+        failure = LookupError('source failed')
+
+        class Source(list):
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise failure
+
+        iterator = iter(_query(Source(), (), lambda x: x, True))
+        with self.assertRaises(LookupError) as raised:
+            next(iterator)
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(next(iterator, 'done'), 'done')
+        self.assertEqual(list(_query([], (), lambda x: x, True)), [])
+
+        class BadSource(list):
+            def __iter__(self):
+                raise failure
+
+        query = _query(BadSource(), (), lambda x: x, True)
+        with self.assertRaises(LookupError):
+            iter(query)
+
+    def test_ownership_until_exhaustion(self):
+        class Source(list):
+            pass
+
+        class Callback:
+            def __call__(self, x):
+                return x
+
+        source, callback = Source([1]), Callback()
+        source_ref, callback_ref = weakref.ref(source), weakref.ref(callback)
+        query = _query(source, (), callback, True)
+        iterator = iter(query)
+        del source, callback, query
+        gc.collect()
+        self.assertIsNotNone(source_ref())
+        self.assertIsNotNone(callback_ref())
+        self.assertEqual(list(iterator), [1])
+        gc.collect()
+        self.assertIsNone(source_ref())
+        self.assertIsNone(callback_ref())
+
+    def test_query_and_iterator_cycles_are_collected(self):
+        class Source(list):
+            pass
+
+        class Callback:
+            def __call__(self, x):
+                return x
+
+        for cycle in ('query', 'iterator'):
+            with self.subTest(cycle=cycle):
+                source, callback = Source([1]), Callback()
+                source_ref, callback_ref = weakref.ref(source), weakref.ref(callback)
+                query = _query(source, (), callback, True)
+                iterator = iter(query)
+                if cycle == 'query':
+                    source.append(query)
+                else:
+                    callback.iterator = iterator
+                del source, callback, query, iterator
+                gc.collect()
+                self.assertIsNone(source_ref())
+                self.assertIsNone(callback_ref())
+
+    def test_native_query_is_immutable(self):
+        query = _query([], (), lambda x: x, True)
+        for kind in (type(query), type(iter(query))):
+            with self.subTest(kind=kind):
+                with self.assertRaises(TypeError):
+                    kind()
+                with self.assertRaises(TypeError):
+                    type('DerivedQuery', (kind,), {})
+                with self.assertRaises(TypeError):
+                    kind.attribute = 1
+        with self.assertRaises(AttributeError):
+            query.source = []
+
+    def test_reentrant_advancement_is_rejected(self):
+        iterator = None
+
+        def project(x):
+            return next(iterator)
+
+        iterator = iter(_query([1, 2], (), project, False))
+        with self.assertRaises(RuntimeError):
+            next(iterator)
+        self.assertEqual(next(iterator, 'done'), 'done')
+
+    def test_native_runtime_program_output(self):
+        result = subprocess.run([sys.executable, '-c', '''
+from _linq import _query
+query = _query([3, 1, 2, 3], (lambda x: x > 1,), lambda x: x * 2, False)
+print(list(query))
+'''], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '[6, 4, 6]\n')
+
+    def test_subinterpreter_state_is_independent(self):
+        import _linq
+        from test import support
+
+        query = _query([1], (), lambda x: x, True)
+        _linq._test_marker = True
+        self.addCleanup(delattr, _linq, '_test_marker')
+        code = f'''
+import _linq
+assert not hasattr(_linq, '_test_marker')
+query = _linq._query([1, 2], (lambda x: x > 1,), lambda x: x * 2, False)
+assert id(type(query)) != {id(type(query))}
+assert list(query) == [4]
+'''
+        result = support.run_in_subinterp_with_config(
+            code, own_gil=True, use_main_obmalloc=False,
+            allow_fork=False, allow_exec=False, allow_threads=True,
+            allow_daemon_threads=False, check_multi_interp_extensions=True,
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(list(query), [1])
+
+    def test_deep_composition_does_not_crash(self):
+        result = subprocess.run([sys.executable, '-c', '''
+import gc
+from _linq import _query
+identity = lambda x: x
+query = _query([1], (lambda x: True,) * 20000, identity, True)
+iterator = iter(query)
+try:
+    assert list(iterator) == [1]
+except RecursionError:
+    pass
+del query, iterator
+gc.collect()
+query = [1]
+for _ in range(20000):
+    query = _query(query, (), identity, True)
+try:
+    assert list(query) == [1]
+except RecursionError:
+    pass
+del query
+gc.collect()
+print('ok')
+'''], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'ok\n')
 
 
 if __name__ == '__main__':

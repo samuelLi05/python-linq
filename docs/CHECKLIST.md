@@ -46,12 +46,12 @@ Architecture: [operator-extension boundaries](PLAN.md#modularity-requirements-fo
   predicate/selector function scopes using stable original-expression keys.
 - [x] **M2.6a** Implement Python/C unparsing, AST traversal/round trips, and
   compiler tooling tests.
-- [ ] **M2.6b** Document query syntax and public AST interfaces.
-- [ ] **M2.7** Implement the normal private C query factory, immutable native query
+- [x] **M2.6b** Document query syntax and public AST interfaces.
+- [x] **M2.7** Implement the normal private C query factory, immutable native query
   type, per-interpreter state, and independent query iterators.
-- [ ] **M2.8** Implement list/query source checks, deferred ordered execution,
+- [x] **M2.8** Implement list/query source checks, deferred ordered execution,
   callback exception behavior, reference ownership, GC, and cleanup.
-- [ ] **M2.V** Verify grammar/AST/binding tests and direct runtime-factory tests:
+- [x] **M2.V** Verify grammar/AST/binding tests and direct runtime-factory tests:
   results, timing, repeatability, errors, and lifetime behavior. Native execution
   through code generation is not required until M3.
 

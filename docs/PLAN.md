@@ -2,8 +2,8 @@
 
 Implementation tracking: [CHECKLIST.md](CHECKLIST.md).
 Build instructions: [SETUP.md](SETUP.md).
-Status: Bazel build integration and initial query grammar/AST are implemented;
-binding, runtime execution, query IR, analysis, and fusion remain pending.
+Status: the frontend, AST tooling, binding, and native lazy runtime are implemented.
+Query-syntax lowering, query IR, analysis, and fusion remain pending.
 
 ## Goal, priorities, and boundaries
 
@@ -79,6 +79,7 @@ Execution semantics:
 - Preserve order and duplicates. Test predicates in written order with Python
   truth testing, short-circuit failures, and project once per surviving element.
 - Follow the underlying list iterator's behavior for mutation during iteration.
+  Honor a list subclass's `__iter__` override.
 - Evaluate the source in the surrounding scope. Each predicate and selector has
   an implicit function scope whose sole parameter is the range variable. Keep
   that variable local and resolve other names with ordinary Python closure and
@@ -212,11 +213,17 @@ _linq._query(source, predicates, selector, identity_projection)
 _linq._fused_query(producer, predicates, selector, identity_projection)
 ```
 
-Predicates are a tuple of compiled functions; selectors are compiled functions.
+The factory accepts a tuple of predicate callables and a selector callable.
+Compiler lowering will supply compiled clause functions.
 Identity metadata comes from the compiler's binding-aware classification. Query
 objects own the source and callbacks; each iterator owns its execution state.
 Implement reference-counting, GC traversal/clearing, error/exhaustion cleanup,
 and per-interpreter module state following existing CPython conventions.
+
+The normal factory is implemented; the fused factory remains M5 work. Runtime
+operator descriptions dispatch to separate native stage constructors and are
+distinct from compiler IR. The current language and runtime interfaces are
+specified in [LANGUAGE.md](LANGUAGE.md).
 
 The compiler loads factories through import bytecode without introducing helper
 bindings in user namespaces. Users need no explicit `_linq` import. The C runtime

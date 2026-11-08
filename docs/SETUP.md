@@ -64,6 +64,10 @@ Generated parser/AST files belong to the build outputs; author their inputs in
 ```
 
 This builds `//:dist` and produces `bazel-bin/python-linq.tar.gz`.
+It also captures the executable and standard library under `build/python-linq/`,
+copies the archive to `build/python-linq.tar.gz`, and provides `build/python` as
+the local launcher. These generated files are ignored by Git and refreshed only
+after a successful Bazel build.
 `bash scripts/setup.sh` delegates to the same launcher. To choose the CPython
 Make parallelism:
 
@@ -99,23 +103,20 @@ build configuration.
 
 ## Build verification
 
-Only the source-override integration and built-interpreter checks are in scope
-for the current build smoke test:
+Run the tracked behavior tests against the captured interpreter and the
+independently extracted distribution:
 
 ```bash
+./build/python tests/test_queries.py -v
 bazel test //:build_smoke --test_output=all
-bazel run //:python -- -VV
+./build/python -VV
 ```
 
-`build_smoke` compares every override byte-for-byte with its entry in
-the source artifact. It rejects links in the distribution archive, extracts it
-into a temporary directory, and launches its `bin/python-linq` interpreter.
-It checks Python
-3.14.0 and `Py_DEBUG=1`, verifies `where`/`select` soft-keyword metadata, and
-parses `(from x in [1, 2, 3] where x > 1 select x * 2)` into `ast.QueryExpr`.
-This verifies that the overridden grammar and AST reach the actual interpreter.
-Compiling that AST must raise the explicit unimplemented-execution error,
-exercising AST validation, preprocessing, and the current code-generation guard.
+`build_smoke` compares every override byte-for-byte with its entry in the source
+artifact. It rejects links in the archive, extracts it into a temporary directory,
+and runs `tests/test_queries.py` using that distribution's `bin/python-linq`.
+The suite covers frontend behavior, scope binding, AST tooling, and actual native
+runtime results, timing, iteration, failures, ownership, and subinterpreters.
 
 To inspect that AST directly:
 
@@ -124,8 +125,9 @@ bazel run //:python -- -c 'import ast; print(ast.dump(ast.parse("(from x in [1, 
 ```
 
 Query compilation currently raises `SyntaxError: LINQ query execution is not
-implemented yet`. Parsing support does not complete M2 binding/runtime or M3
-execution. No broader compiler regression suites are part of this smoke check.
+implemented yet`. Binding and the native runtime are available, but query syntax
+is not yet lowered to that runtime. Lowering belongs to M3. See
+[LANGUAGE.md](LANGUAGE.md).
 
 To use the packaged artifact outside Bazel, choose an extraction directory:
 

@@ -1,8 +1,8 @@
 # Python LINQ
 
 A CPython 3.14.0 compiler project adding native declarative queries over lists.
-The initial grammar and `QueryExpr` AST are present. Query execution, binding,
-query IR, and optimization remain to be implemented.
+Query parsing, AST tooling, binding, and a native lazy runtime are implemented.
+Query-syntax lowering, query IR, and optimization remain to be implemented.
 
 Compiler changes are tracked as complete replacement files under `patches/`,
 using CPython-relative paths. The ignored `cpython/` checkout is reference source;
@@ -20,16 +20,18 @@ Install Bazel 9.0.1 (or Bazelisk) and the native toolchain described in
 ```bash
 ./build.sh
 bazel test //:build_smoke --test_output=all
-bazel run //:python -- -VV
+./build/python tests/test_queries.py -v
 ```
 
 The smoke test compares every override with the generated source archive and
-uses the extracted distribution's debug interpreter to parse query syntax into
-`ast.QueryExpr`.
-It is a build integration check; query execution is not implemented yet.
+runs the tracked frontend and runtime behavior tests against the extracted
+distribution's interpreter. Native runtime queries execute through the private
+factory; query syntax still rejects execution until lowering is implemented.
 
-The distribution is `bazel-bin/python-linq.tar.gz`. Exact commands, artifact
-paths, and verification results are in [SETUP.md](docs/SETUP.md).
+The captured interpreter is `build/python`, with its executable and libraries
+under `build/python-linq/`. The captured archive is `build/python-linq.tar.gz`.
+These outputs are ignored by Git. Build details are in [SETUP.md](docs/SETUP.md).
 
+Language and runtime contracts: [LANGUAGE.md](docs/LANGUAGE.md).
 Implementation scope: [PLAN.md](docs/PLAN.md).
 Progress: [CHECKLIST.md](docs/CHECKLIST.md).
