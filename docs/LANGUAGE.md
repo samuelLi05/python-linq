@@ -2,11 +2,11 @@
 
 ## Implementation boundary
 
-The compiler parses, validates, binds, and unparses filtering/projection queries.
-The native `_linq` runtime executes queries constructed through its private
-factory. Lowering query syntax to that runtime belongs to M3; executing a query
-expression currently raises `SyntaxError: LINQ query execution is not implemented
-yet` before the containing program executes.
+The compiler parses, validates, binds, plans, and lowers filtering/projection
+queries. Native query expressions execute without an explicit `_linq` import.
+Each clause compiles to an ordinary Python function; the native `_linq` runtime
+retains those functions and executes them lazily. Normal execution does not fuse
+query pipelines. Query-merge analysis and opt-in fusion remain pending.
 
 ## Syntax
 
@@ -63,8 +63,8 @@ does not become a local in the surrounding scope.
 
 `symtable.symtable()` exposes these child function scopes as `linq_where` and
 `linq_select`. It applies the same query-expression restrictions as AST parsing.
-The clause-expression identities used for those scopes are retained for future
-code generation.
+Binding and code generation share query-owned clause-slot keys, distinct from
+the expression identities used by nested lambdas and comprehensions.
 
 ## Private runtime factory
 
@@ -127,7 +127,49 @@ and Boolean terminal operators can consume an upstream iterator through separate
 entry points. These changes do not require replacing existing filter/projection
 behavior.
 
-Runtime operator descriptions are distinct from the compiler IR planned for M3.
+Runtime operator descriptions are distinct from the compiler-owned query IR.
 The current `QueryExpr` fields describe the basic syntax rather than a universal
 schema for future clauses. Fusion, new operators, additional source kinds, and a
 public invocation form for those operators remain separately scoped work.
+
+## Compiler inspection
+
+```python
+_linq._inspect(tree, filename="<linq>", mode="exec", *, optimize=-1)
+```
+
+This private interface accepts a matching `ast.Module`, `ast.Expression`, or
+`ast.Interactive` for `exec`, `eval`, or `single`. Optimization accepts `-1`
+(interpreter setting), `0`, `1`, or `2`. It validates and converts the AST,
+preprocesses it, builds symbols, and creates plans through the same compiler
+setup as normal compilation. It does not generate instructions or execute the
+inspected program, and it does not mutate the supplied Python AST.
+
+The result is a dictionary with a `queries` list in binding traversal order.
+Each query contains a deterministic `id`, `owner` scope, `location`, execution
+`mode`, and ordered `operators`. Scope descriptions contain an `id`, `name`, and
+`location`. IDs are inspection-local integers, not memory addresses. Locations
+are `(lineno, col_offset, end_lineno, end_col_offset)` with UTF-8 byte columns.
+
+Operators report their kind, input/result categories, expression-node kind, and
+location. Sources have no operator input; filters and projections consume and
+produce sequences.
+A named source includes its normalized binding name and scope category; a direct
+query source includes `input_plan`. Filters and projections include scope,
+parameter, and sorted free-variable captures. Projections include `identity`.
+Identity means a load of the clause's own parameter, including class-name
+mangling. Named sources are not assigned producer definitions until M4 analysis.
+All current plans use normal execution mode.
+
+The source driver uses the built interpreter:
+
+```bash
+./build/python scripts/linq.py ir path/to/program.py
+./build/python scripts/linq.py dis path/to/program.py
+./build/python scripts/linq.py run path/to/program.py argument
+```
+
+Put `--optimize {-1,0,1,2}` before the filename. IR output is JSON. Disassembly
+includes nested clause code objects. Only `run` executes the program, with script
+arguments and sibling imports available. These commands do not write bytecode
+caches for the submitted source file.

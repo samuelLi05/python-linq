@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--source", required=True)
     parser.add_argument("--distribution", required=True)
     parser.add_argument("--tests", required=True)
+    parser.add_argument("--driver", required=True)
     parser.add_argument("--override", action="append", default=[])
     args = parser.parse_args()
     locations = runfiles.Create()
@@ -40,6 +41,7 @@ def main():
             distribution.extractall(directory, filter="data")
         runtime = Path(directory) / "python-linq"
         env = {name: value for name, value in os.environ.items() if not name.startswith("PYTHON")}
+        env["LINQ_DRIVER"] = str(locate(args.driver))
         result = subprocess.run(
             [str(runtime / "bin/python-linq"), "-s", str(locate(args.tests)), "-v"],
             env=env, cwd=directory, text=True, capture_output=True,

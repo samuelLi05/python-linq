@@ -2039,6 +2039,105 @@ codegen_lambda(compiler *c, expr_ty e)
     return SUCCESS;
 }
 
+/* BEGIN LINQ override: plan-driven query lowering. */
+static int
+codegen_query_clause(compiler *c, const _PyLinqOperator *op)
+{
+    if (op->kind != _PyLinq_FILTER && op->kind != _PyLinq_PROJECT) {
+        PyErr_SetString(PyExc_SystemError, "unknown LINQ clause operator");
+        return ERROR;
+    }
+    _PyCompile_CodeUnitMetadata umd = {.u_argcount = 1};
+    PySTEntryObject *parent = SYMTABLE_ENTRY(c);
+    int result = codegen_enter_scope(c, op->scope->ste_name, COMPILE_SCOPE_FUNCTION,
+                                     op->scope_key, op->expression->lineno,
+                                     NULL, &umd);
+    if (result < 0) {
+        if (SYMTABLE_ENTRY(c) != parent) {
+            _PyCompile_ExitScope(c);
+        }
+        return ERROR;
+    }
+    PyCodeObject *co = NULL;
+    if (codegen_visit_expr(c, op->expression) < 0) {
+        goto done;
+    }
+    if (codegen_addop_noarg(INSTR_SEQUENCE(c), RETURN_VALUE, LOC(op->expression)) < 0) {
+        goto done;
+    }
+    co = _PyCompile_OptimizeAndAssemble(c, 1);
+done:
+    _PyCompile_ExitScope(c);
+    if (co == NULL) {
+        return ERROR;
+    }
+    result = codegen_make_closure(c, LOC(op->expression), co, 0);
+    Py_DECREF(co);
+    return result;
+}
+
+static int
+codegen_query(compiler *c, expr_ty query)
+{
+    const _PyLinqPlan *plan = _PyCompile_LinqPlan(c, query);
+    if (plan == NULL) {
+        return ERROR;
+    }
+    if (plan->mode != _PyLinq_NORMAL || plan->operator_count < 2 ||
+        plan->operators[0].kind != _PyLinq_SOURCE ||
+        plan->operators[plan->operator_count - 1].kind != _PyLinq_PROJECT) {
+        PyErr_SetString(PyExc_SystemError, "invalid LINQ execution plan");
+        return ERROR;
+    }
+    location loc = LOC(query);
+    PyObject *module = PyUnicode_FromString("_linq");
+    PyObject *factory = PyUnicode_FromString("_query");
+    PyObject *fromlist = factory ? PyTuple_Pack(1, factory) : NULL;
+    int result = ERROR;
+    if (module != NULL && fromlist != NULL &&
+        codegen_addop_load_const(c, loc, _PyLong_GetZero()) == SUCCESS &&
+        codegen_addop_load_const(c, loc, fromlist) == SUCCESS &&
+        codegen_addop_name(c, loc, IMPORT_NAME, METADATA(c)->u_names, module) == SUCCESS &&
+        codegen_addop_name(c, loc, IMPORT_FROM, METADATA(c)->u_names, factory) == SUCCESS) {
+        result = SUCCESS;
+    }
+    Py_XDECREF(module);
+    Py_XDECREF(factory);
+    Py_XDECREF(fromlist);
+    RETURN_IF_ERROR(result);
+    ADDOP_I(c, loc, SWAP, 2);
+    ADDOP(c, loc, POP_TOP);
+    ADDOP(c, loc, PUSH_NULL);
+    VISIT(c, expr, plan->operators[0].expression);
+
+    Py_ssize_t count = plan->operator_count - 2;
+    int use_list = count > _PY_STACK_USE_GUIDELINE;
+    if (use_list) {
+        ADDOP_I(c, loc, BUILD_LIST, 0);
+    }
+    for (Py_ssize_t i = 1; i <= count; i++) {
+        if (plan->operators[i].kind != _PyLinq_FILTER) {
+            PyErr_SetString(PyExc_SystemError, "unknown LINQ filter operator");
+            return ERROR;
+        }
+        RETURN_IF_ERROR(codegen_query_clause(c, &plan->operators[i]));
+        if (use_list) {
+            ADDOP_I(c, loc, LIST_APPEND, 1);
+        }
+    }
+    if (use_list) {
+        ADDOP_I(c, loc, CALL_INTRINSIC_1, INTRINSIC_LIST_TO_TUPLE);
+    }
+    else {
+        ADDOP_I(c, loc, BUILD_TUPLE, count);
+    }
+    RETURN_IF_ERROR(codegen_query_clause(c, &plan->operators[count + 1]));
+    ADDOP_LOAD_CONST(c, loc, plan->identity_projection ? Py_True : Py_False);
+    ADDOP_I(c, loc, CALL, 4);
+    return SUCCESS;
+}
+/* END LINQ override */
+
 static int
 codegen_if(compiler *c, stmt_ty s)
 {
@@ -5207,9 +5306,9 @@ codegen_visit_expr(compiler *c, expr_ty e)
         return codegen_set(c, e);
     case GeneratorExp_kind:
         return codegen_genexp(c, e);
-    /* BEGIN LINQ override: unsupported query execution. */
+    /* BEGIN LINQ override: query expression lowering. */
     case QueryExpr_kind:
-        return _PyCompile_Error(c, loc, "LINQ query execution is not implemented yet");
+        return codegen_query(c, e);
     /* END LINQ override */
     case ListComp_kind:
         return codegen_listcomp(c, e);

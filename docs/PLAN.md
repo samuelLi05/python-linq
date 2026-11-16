@@ -2,8 +2,9 @@
 
 Implementation tracking: [CHECKLIST.md](CHECKLIST.md).
 Build instructions: [SETUP.md](SETUP.md).
-Status: the frontend, AST tooling, binding, and native lazy runtime are implemented.
-Query-syntax lowering, query IR, analysis, and fusion remain pending.
+Status: the frontend, AST tooling, binding, query IR, native syntax lowering,
+and lazy C runtime are implemented. Control/data-flow analysis and fusion remain
+pending.
 
 ## Goal, priorities, and boundaries
 
@@ -46,7 +47,7 @@ passing = (
 print(list(passing))  # [97, 92, 81]
 ```
 
-The initial grammar parses this syntax; execution is not implemented yet.
+The modified interpreter parses and executes this syntax through the native runtime.
 The first version accepts:
 
 ```text
@@ -99,7 +100,7 @@ fluent method API is not part of v1.
 | Parsing | Extend the PEG expression grammar with queries, nesting, clause ordering, and focused invalid-syntax rules. | Query ASTs and positive/negative grammar tests. |
 | AST and validation | Add `QueryExpr(target, source, predicates, selector)`; require a `Name` target in store context and preserve expression locations. Validate parsed and manually constructed nodes. | AST traversal, validation, round trips, and compilation from AST. |
 | Preprocessing | Visit query children and apply appropriate existing preprocessing while preserving explicit query nodes. Do not replace the public AST with synthetic lambdas. | Correct `ast.parse()` and optimized-AST behavior. |
-| Binding | Visit the source in its enclosing scope; create implicit function scopes for predicates and selector, using original expression nodes as stable scope keys. | Correct local/global/free-variable and closure behavior. |
+| Binding | Visit the source in its enclosing scope; create implicit function scopes for predicates and selector, using query-owned clause slots as stable scope keys. | Correct local/global/free-variable and closure behavior. |
 | Query IR | Build compiler-owned C plans after preprocessing and symbol-table construction, before instruction generation. Keep plans separately from the public AST. | Deterministic IR inspection and plan validation. |
 | Analysis | Build a bounded per-function CFG and compute reaching definitions, dominance, uses, and capture/escape restrictions. | Eligible/ineligible/unknown decisions with reasons and locations. |
 | Optimization | Transform proven eligible nested execution into compiler-authorized fused execution in query IR. | Before/after plans and semantic-equivalence checks. |
@@ -124,7 +125,8 @@ There is no source-string translation/reparsing step.
 Every query gets a plan, including when fusion is disabled. The initial IR has:
 
 - **Source:** the source expression evaluated at construction.
-- **QueryInput:** a reference to a query-producing local definition.
+- **QueryInput:** a plan reference for a directly nested query source. Named
+  sources retain binding information; M4 resolves query-producing definitions.
 - **Filter:** an ordered predicate, binding information, and source location.
 - **Project:** a selector, binding information, source location, and a flag
   identifying an exact projection of the range variable.
@@ -133,6 +135,13 @@ Every query gets a plan, including when fusion is disabled. The initial IR has:
 Ordinary clause expressions remain references to their original ASTs. Existing
 CPython code generation compiles their arithmetic, calls, attributes, and other
 operations. We are not building an IR or optimizer for every Python expression.
+
+Binding records each query's enclosing symbol entry and class-mangling context.
+The planner consumes that registry after symbol analysis. Clause keys use the
+addresses of predicate sequence slots and the selector field in their owning
+query, distinct from scope-forming lambda/comprehension body expressions.
+Compiler plans borrow AST and symbol entries and are freed with the compiler;
+only generated code and runtime objects survive compilation.
 
 The function CFG is a high-level analysis model distinct from CPython's later
 bytecode-instruction CFG. Initially support plain assignments, expression
@@ -214,7 +223,7 @@ _linq._fused_query(producer, predicates, selector, identity_projection)
 ```
 
 The factory accepts a tuple of predicate callables and a selector callable.
-Compiler lowering will supply compiled clause functions.
+Compiler lowering supplies compiled clause functions.
 Identity metadata comes from the compiler's binding-aware classification. Query
 objects own the source and callbacks; each iterator owns its execution state.
 Implement reference-counting, GC traversal/clearing, error/exhaustion cleanup,
@@ -238,8 +247,10 @@ ordinary `-O`, dynamically compiled future units, or imported modules. AST-only
 compilation keeps explicit query structure; fusion operates on compiler-owned
 query IR before instruction generation.
 
-Provide a developer driver for source execution, IR inspection, and eligibility
-explanations using the same C planning/analysis implementation. Explicitly compile
+The `scripts/linq.py` driver provides `run`, `ir`, and `dis` subcommands.
+IR inspection uses `_linq._inspect` and the same C compiler setup and planner as
+normal compilation. Eligibility explanations will extend that shared implementation
+in M4. Explicitly compile
 source for optimized/unoptimized comparisons, without introducing a separate
 bytecode-cache mode. Inspection must not execute the inspected program.
 
@@ -268,8 +279,9 @@ prerequisites. The installed runtime and packaged distribution are final
 artifacts. The root `build.sh` delegates to Bazel.
 
 The current delivery gate compares every override with the source artifact and
-starts the built debug interpreter to parse a query into `ast.QueryExpr`. This
-gate does not establish query execution or complete frontend behavior. Broader
+runs the tracked query suite against the built debug interpreter and extracted
+distribution. It covers native syntax execution, frontend/binding/tooling,
+IR inspection, driver behavior, and direct runtime semantics. Broader
 semantic and platform verification remains in later milestones.
 
 Verification records contain test commands and results, skips/failures, relevant

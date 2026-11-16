@@ -1,5 +1,8 @@
 #include "Python.h"
 #include "_linq/linq_runtime.h"
+/* BEGIN LINQ override: compiler inspection. */
+#include "pycore_compile.h"
+/* END LINQ override */
 
 typedef struct {
     PyObject_HEAD
@@ -159,8 +162,53 @@ PyDoc_STRVAR(query_doc,
 "--\n\n"
 "Construct a native lazy query without invoking its callbacks.");
 
+static PyObject *
+linq_inspect(PyObject *module, PyObject *args, PyObject *kwargs)
+{
+    static char *keywords[] = {"tree", "filename", "mode", "optimize", NULL};
+    PyObject *tree;
+    PyObject *filename = NULL;
+    const char *mode = "exec";
+    int optimize = -1;
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|Us$i:_inspect", keywords,
+                                     &tree, &filename, &mode, &optimize)) {
+        return NULL;
+    }
+    int compile_mode;
+    if (strcmp(mode, "exec") == 0) {
+        compile_mode = 0;
+    }
+    else if (strcmp(mode, "eval") == 0) {
+        compile_mode = 1;
+    }
+    else if (strcmp(mode, "single") == 0) {
+        compile_mode = 2;
+    }
+    else {
+        PyErr_SetString(PyExc_ValueError, "mode must be 'exec', 'eval' or 'single'");
+        return NULL;
+    }
+    if (optimize < -1 || optimize > 2) {
+        PyErr_SetString(PyExc_ValueError, "invalid optimize value");
+        return NULL;
+    }
+    filename = filename ? Py_NewRef(filename) : PyUnicode_FromString("<linq>");
+    if (filename == NULL) {
+        return NULL;
+    }
+    PyObject *result = _PyCompile_LinqInspect(tree, filename, optimize, compile_mode);
+    Py_DECREF(filename);
+    return result;
+}
+
+PyDoc_STRVAR(inspect_doc,
+"_inspect($module, tree, filename='<linq>', mode='exec', *, optimize=-1)\n"
+"--\n\n"
+"Inspect bound query plans without generating instructions or executing code.");
+
 static PyMethodDef linq_methods[] = {
     {"_query", linq_query, METH_VARARGS, query_doc},
+    {"_inspect", _PyCFunction_CAST(linq_inspect), METH_VARARGS | METH_KEYWORDS, inspect_doc},
     {NULL, NULL, 0, NULL}
 };
 

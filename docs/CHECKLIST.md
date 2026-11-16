@@ -43,7 +43,7 @@ Architecture: [operator-extension boundaries](PLAN.md#modularity-requirements-fo
 - [x] **M2.4** Traverse queries in preprocessing while preserving public AST
   structure for ordinary/optimized AST requests.
 - [x] **M2.5** Implement source binding in the surrounding scope and implicit
-  predicate/selector function scopes using stable original-expression keys.
+  predicate/selector function scopes using stable query-owned clause keys.
 - [x] **M2.6a** Implement Python/C unparsing, AST traversal/round trips, and
   compiler tooling tests.
 - [x] **M2.6b** Document query syntax and public AST interfaces.
@@ -57,21 +57,23 @@ Architecture: [operator-extension boundaries](PLAN.md#modularity-requirements-fo
 
 ## M3: unoptimized query IR and lowering
 
-- [ ] **M3.1** Build compiler-owned C query plans after preprocessing and binding,
+- [x] **M3.0** Use query-owned clause-slot keys to distinguish predicate/selector
+  scopes from clause-root lambdas and comprehensions.
+- [x] **M3.1** Build compiler-owned C query plans after preprocessing and binding,
   before instruction generation; keep ordinary expressions as AST references.
-- [ ] **M3.2** Represent source/query input, ordered filters, projection/identity
+- [x] **M3.2** Represent source/query input, ordered filters, projection/identity
   metadata, source locations, bindings, and normal execution mode.
-- [ ] **M3.3** Validate plans and provide deterministic inspection output without
+- [x] **M3.3** Validate plans and provide deterministic inspection output without
   changing the public query AST or executing the inspected program.
-- [ ] **M3.4** Compile clause functions through existing closure machinery, using
+- [x] **M3.4** Compile clause functions through existing closure machinery, using
   the same scope keys established during binding.
-- [ ] **M3.5** Lower plans to normal `_linq` C factory calls using existing
+- [x] **M3.5** Lower plans to normal `_linq` C factory calls using existing
   instructions; evaluate sources once and avoid helper names in user globals.
-- [ ] **M3.6** Execute native syntax in assignments, arguments, returns, and nested
+- [x] **M3.6** Execute native syntax in assignments, arguments, returns, and nested
   queries. Verify captures, target isolation, class contexts, and source binding.
-- [ ] **M3.7** Add a developer source-execution/inspection driver backed by the
+- [x] **M3.7** Add a developer source-execution/inspection driver backed by the
   shared C planning implementation; keep ordinary lowering unfused.
-- [ ] **M3.V** Pass end-to-end native query tests, IR/code-generation checks,
+- [x] **M3.V** Pass end-to-end native query tests, IR/code-generation checks,
   and existing compiler regression suites.
 
 **Deliverable:** native filtering/projection without fusion.

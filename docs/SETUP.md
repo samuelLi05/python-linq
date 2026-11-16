@@ -115,8 +115,9 @@ bazel test //:build_smoke --test_output=all
 `build_smoke` compares every override byte-for-byte with its entry in the source
 artifact. It rejects links in the archive, extracts it into a temporary directory,
 and runs `tests/test_queries.py` using that distribution's `bin/python-linq`.
-The suite covers frontend behavior, scope binding, AST tooling, and actual native
-runtime results, timing, iteration, failures, ownership, and subinterpreters.
+The suite covers frontend behavior, scope binding, AST tooling, native query
+execution, IR inspection, generated clause functions, driver behavior, and runtime
+results, timing, iteration, failures, ownership, and subinterpreters.
 
 To inspect that AST directly:
 
@@ -124,10 +125,16 @@ To inspect that AST directly:
 bazel run //:python -- -c 'import ast; print(ast.dump(ast.parse("(from x in [1, 2, 3] where x > 1 select x * 2)"), indent=2))'
 ```
 
-Query compilation currently raises `SyntaxError: LINQ query execution is not
-implemented yet`. Binding and the native runtime are available, but query syntax
-is not yet lowered to that runtime. Lowering belongs to M3. See
-[LANGUAGE.md](LANGUAGE.md).
+Native syntax executes through compiler-owned plans and the C runtime. Inspect
+or execute a source file with:
+
+```bash
+./build/python scripts/linq.py ir path/to/program.py
+./build/python scripts/linq.py dis path/to/program.py
+./build/python scripts/linq.py run path/to/program.py
+```
+
+See [LANGUAGE.md](LANGUAGE.md) for syntax and inspection contracts.
 
 To use the packaged artifact outside Bazel, choose an extraction directory:
 
@@ -159,6 +166,6 @@ using Bazel **9.0.1**:
 
 Smoke-test output is available at `bazel-testlogs/build_smoke/test.log`.
 Build timestamps in the interpreter version are deliberately redacted.
-Linux and WSL require separate runs on those platforms. Query execution,
-complete binding/tooling behavior, and broader compiler regression testing
-remain outside this build-verification result.
+Linux and WSL require separate runs on those platforms. This historical
+build-verification record predates native syntax execution; use the tracked
+query suite above to verify the current compiler and runtime.

@@ -1,14 +1,19 @@
-"""Functional checks for the current query frontend and built interpreter."""
+"""Functional checks for native queries, compiler inspection, and the C runtime."""
 
 import ast
+import dis
+import json
+import os
+from pathlib import Path
 import gc
 import subprocess
 import symtable
 import sys
+import tempfile
 import unittest
 import weakref
 
-from _linq import _query
+from _linq import _inspect, _query
 
 
 class QueryTests(unittest.TestCase):
@@ -68,7 +73,7 @@ class QueryTests(unittest.TestCase):
                 with self.assertRaises(SyntaxError):
                     ast.parse('(from x in values ' + clause + ')')
 
-    def test_query_program_fails_before_executing(self):
+    def test_native_query_program_executes(self):
         result = subprocess.run(
             [sys.executable, '-c', '''
 print("started")
@@ -76,10 +81,9 @@ query = (from x in [1, 2, 3] where x > 1 select x * 2)
 print(list(query))
 '''], capture_output=True, text=True,
         )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, '')
-        self.assertIn('SyntaxError', result.stderr)
-        self.assertIn('LINQ query execution is not implemented yet', result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'started\n[4, 6]\n')
+        self.assertEqual(result.stderr, '')
 
     def test_ordinary_program_executes_correctly(self):
         result = subprocess.run(
@@ -94,6 +98,330 @@ print(select(where))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, '[6]\n')
         self.assertEqual(result.stderr, '')
+
+
+class QueryExecutionTests(unittest.TestCase):
+    def test_values_and_expression_positions(self):
+        for values in ([], [3, 1, 2, 3]):
+            with self.subTest(values=values):
+                query = (from x in values where x > 1 where x < 4 select x * 2)
+                self.assertEqual(list(query), [x * 2 for x in values if 1 < x < 4])
+                self.assertEqual(list((from x in values select x)), values)
+
+        def make(values):
+            return (from x in values select x + 1)
+
+        self.assertEqual(list(make([1, 2])), [2, 3])
+        self.assertEqual(list((from y in (from x in [1, 2] select x * 2)
+                               where y > 2 select y + 1)), [5])
+        nested = (from x in [[1, 2], [3]] select (from y in x select y * 2))
+        self.assertEqual([list(row) for row in nested], [[2, 4], [6]])
+
+    def test_construction_and_callback_timing(self):
+        events = []
+
+        def source():
+            events.append('source')
+            return [0, 1, 2]
+
+        def predicate(x, name):
+            events.append((name, x))
+            return x > 0 if name == 'first' else x > 1
+
+        def project(x):
+            events.append(('project', x))
+            return x * 2
+
+        query = (from x in source() where predicate(x, 'first')
+                 where predicate(x, 'second') select project(x))
+        self.assertEqual(events, ['source'])
+        iterator = iter(query)
+        self.assertEqual(events, ['source'])
+        self.assertEqual(next(iterator), 4)
+        self.assertEqual(events, ['source', ('first', 0), ('first', 1), ('second', 1),
+                                  ('first', 2), ('second', 2), ('project', 2)])
+
+    def test_retained_source_and_independent_iterations(self):
+        values = [1, 2]
+        original = values
+        query = (from values in values select values * 2)
+        values = [9]
+        original.append(3)
+        first, second = iter(query), iter(query)
+        self.assertEqual(next(first), 2)
+        self.assertEqual(list(second), [2, 4, 6])
+        self.assertEqual(list(first), [4, 6])
+        self.assertEqual(list(query), [2, 4, 6])
+        self.assertEqual(values, [9])
+
+    def test_captured_cells_and_target_isolation(self):
+        def make():
+            limit = 1
+
+            def change(value):
+                nonlocal limit
+                limit = value
+
+            query = (from x in [1, 2, 3] where x > limit select x + limit)
+            self.assertNotIn('x', locals())
+            return query, change
+
+        query, change = make()
+        self.assertEqual(list(query), [3, 4])
+        change(2)
+        self.assertEqual(list(query), [5])
+
+    def test_clause_root_scopes_and_nested_captures(self):
+        functions = list((from x in [1, 2] select lambda z: x + z))
+        self.assertEqual([function(10) for function in functions], [11, 12])
+        self.assertEqual(list((from x in [1, 2] select [x + z for z in [10, 20]])),
+                         [[11, 21], [12, 22]])
+        self.assertEqual(list((from x in [1, 2] select {x + z for z in [10]})),
+                         [{11}, {12}])
+        self.assertEqual(list((from x in [1, 2] select {z: x + z for z in [10]})),
+                         [{10: 11}, {10: 12}])
+        generators = list((from x in [1, 2] select (x + z for z in [10, 20])))
+        self.assertEqual([list(generator) for generator in generators], [[11, 21], [12, 22]])
+        self.assertEqual(list((from x in [1, 2] where (lambda z: z + x)(0) > 1
+                               select x)), [2])
+        self.assertEqual([list((from y in [x] select x + y)) for x in [1, 2]],
+                         [[2], [4]])
+
+    def test_globals_class_context_and_private_names(self):
+        namespace = {}
+        exec('''
+limit = 1
+def make(values):
+    global limit
+    return (from x in values where x > limit select x)
+class Queries:
+    values = [1, 2, 3]
+    limit = 99
+    query = (from x in values where x > limit select x)
+    private = (from __x in values select _Queries__x)
+''', namespace)
+        query = namespace['make']([1, 2, 3])
+        self.assertEqual(list(query), [2, 3])
+        cls = namespace['Queries']
+        self.assertEqual(list(cls.query), [2, 3])
+        self.assertEqual(list(cls.private), [1, 2, 3])
+        namespace['limit'] = 2
+        self.assertEqual(list(query), [3])
+        self.assertEqual(list(cls.query), [3])
+
+    def test_list_subclass_and_failures(self):
+        events = []
+
+        class Source(list):
+            def __iter__(self):
+                events.append('iter')
+                return iter([3, 2])
+
+        query = (from x in Source() select x * 2)
+        self.assertEqual(events, [])
+        self.assertEqual(list(query), [6, 4])
+        self.assertEqual(events, ['iter'])
+        with self.assertRaises(TypeError):
+            query = (from x in (1, 2) select x)
+
+        def fail(x):
+            raise ValueError('callback')
+
+        query = (from x in [1] select fail(x))
+        iterator = iter(query)
+        with self.assertRaisesRegex(ValueError, 'callback'):
+            next(iterator)
+        self.assertEqual(list(iterator), [])
+
+    def test_chained_queries_keep_parent_projection(self):
+        events = []
+
+        def project(x):
+            events.append(x)
+            return x + 10
+
+        parent = (from x in [1, 2] select project(x))
+        child = (from x in parent where x > 11 select x * 2)
+        self.assertEqual(events, [])
+        self.assertEqual(list(child), [24])
+        self.assertEqual(events, [1, 2])
+
+    def test_ast_compilation_and_compile_modes(self):
+        tree = ast.parse('(from x in [1, 2] select x + 1)', mode='eval')
+        self.assertEqual(list(eval(compile(tree, '<ast>', 'eval'))), [2, 3])
+        for optimize in (0, 1, 2):
+            code = compile('(from x in [1, 2] select x)', '<eval>', 'eval', optimize=optimize)
+            self.assertEqual(list(eval(code)), [1, 2])
+        namespace = {}
+        exec(compile('q = (from x in [1] select x)', '<single>', 'single'), namespace)
+        self.assertEqual(list(namespace['q']), [1])
+        optimized = compile(tree, '<ast>', 'eval', ast.PyCF_OPTIMIZED_AST)
+        self.assertIsInstance(optimized.body, ast.QueryExpr)
+
+        class Increment(ast.NodeTransformer):
+            def visit_Constant(self, node):
+                return ast.copy_location(ast.Constant(node.value + 1), node)
+
+        transformed = Increment().visit(ast.parse('(from x in [1, 2] select x)', mode='eval'))
+        self.assertEqual(list(eval(compile(transformed, '<transformed>', 'eval'))), [2, 3])
+
+    def test_annotations_aliases_and_ordinary_control_flow(self):
+        namespace = {}
+        exec('''
+values = [1, 2]
+def annotated(value: (from x in values select x * 2)):
+    return value
+type Alias = (from x in values select x + 1)
+def generate():
+    for value in values:
+        yield (from x in [value] select x * 2)
+async def asynchronous():
+    return (from x in values select x)
+''', namespace)
+        self.assertEqual(list(namespace['annotated'].__annotations__['value']), [2, 4])
+        self.assertEqual(list(namespace['Alias'].__value__), [2, 3])
+        self.assertEqual([list(q) for q in namespace['generate']()], [[2], [4]])
+        import asyncio
+        self.assertEqual(list(asyncio.run(namespace['asynchronous']())), [1, 2])
+
+    def test_helper_names_do_not_enter_user_namespaces(self):
+        namespace = {'_query': object(), '_linq': object(), '__builtins__': __builtins__}
+        exec('q = (from x in [1] select x)', namespace)
+        self.assertEqual(set(namespace), {'_query', '_linq', '__builtins__', 'q'})
+        self.assertEqual(list(namespace['q']), [1])
+
+    def test_large_predicate_sequence(self):
+        source = '(from x in [1, 2] ' + 'where x > 0 ' * 100 + 'select x)'
+        self.assertEqual(list(eval(source)), [1, 2])
+
+
+class QueryInspectionTests(unittest.TestCase):
+    def test_ordered_ir_and_binding_metadata(self):
+        tree = ast.parse('''
+def make(values, limit):
+    return (from x in values where x > limit where x < 10 select x)
+''')
+        info = _inspect(tree)
+        query, = info['queries']
+        self.assertEqual(query['mode'], 'normal')
+        source, first, second, project = query['operators']
+        self.assertEqual([op['kind'] for op in query['operators']],
+                         ['Source', 'Filter', 'Filter', 'Project'])
+        self.assertEqual(source['binding'], {'name': 'values', 'scope': 'local'})
+        self.assertEqual(source['input'], 'none')
+        self.assertTrue(all(op['result'] == 'sequence' for op in query['operators']))
+        self.assertEqual(first['input'], 'sequence')
+        self.assertEqual(first['captures'], ['limit'])
+        self.assertEqual(second['captures'], [])
+        self.assertEqual(project['parameter'], 'x')
+        self.assertTrue(project['identity'])
+        self.assertNotEqual(first['scope']['id'], second['scope']['id'])
+        self.assertEqual(info, _inspect(tree))
+
+    def test_inspection_does_not_execute_and_preserves_ast(self):
+        tree = ast.parse('''
+raise RuntimeError('must not execute')
+import module_that_does_not_exist
+@decorator_that_does_not_exist
+def f(value=(from x in source_that_does_not_exist() select callback(x))):
+    return value
+''')
+        before = ast.dump(tree, include_attributes=True)
+        info = _inspect(tree)
+        self.assertEqual(len(info['queries']), 1)
+        self.assertEqual(ast.dump(tree, include_attributes=True), before)
+        self.assertFalse(info['queries'][0]['operators'][-1]['identity'])
+
+    def test_nested_inputs_and_mangled_identity(self):
+        info = _inspect(ast.parse('(from y in (from x in values select x) select y + 1)'))
+        outer, inner = info['queries']
+        self.assertEqual(outer['operators'][0]['input_plan'], inner['id'])
+        self.assertFalse(outer['operators'][-1]['identity'])
+        info = _inspect(ast.parse('class C:\n    q = (from __x in values select _C__x)'))
+        self.assertTrue(info['queries'][0]['operators'][-1]['identity'])
+
+    def test_inspection_modes_and_invalid_inputs(self):
+        for mode in ('exec', 'eval', 'single'):
+            with self.subTest(mode=mode):
+                info = _inspect(ast.parse('(from x in values select x)', mode=mode), mode=mode)
+                self.assertEqual(len(info['queries']), 1)
+        for mode in ('func_type', 'unknown'):
+            with self.assertRaises(ValueError):
+                _inspect(ast.parse('1'), mode=mode)
+        with self.assertRaises(TypeError):
+            _inspect('source')
+        with self.assertRaises(TypeError):
+            _inspect(ast.parse('1'), mode='eval')
+        for level in (-2, 3):
+            with self.assertRaises(ValueError):
+                _inspect(ast.parse('1'), optimize=level)
+        tree = ast.parse('(from x in values select x)')
+        tree.body[0].value.target.ctx = ast.Load()
+        with self.assertRaises(ValueError):
+            _inspect(tree)
+
+    def test_clause_code_objects_and_factory_call(self):
+        import _testinternalcapi
+
+        code = compile('''
+def make(values, limit):
+    return (from x in values where x > limit select x * 2)
+''', '<codegen>', 'exec')
+        function, = [item for item in code.co_consts if isinstance(item, type(code))]
+        clauses = [item for item in function.co_consts if isinstance(item, type(code))]
+        self.assertEqual([clause.co_name for clause in clauses], ['linq_where', 'linq_select'])
+        self.assertEqual(clauses[0].co_freevars, ('limit',))
+        self.assertEqual(clauses[0].co_varnames[:1], ('x',))
+        operations = list(dis.get_instructions(function))
+        self.assertTrue(any(op.opname == 'IMPORT_NAME' and op.argval == '_linq'
+                            for op in operations))
+        self.assertTrue(any(op.opname == 'IMPORT_FROM' and op.argval == '_query'
+                            for op in operations))
+        self.assertTrue(any(op.opname == 'CALL' and op.arg == 4 for op in operations))
+        self.assertNotIn('x', function.co_varnames)
+        self.assertNotIn('_query', function.co_varnames)
+        sequence, _ = _testinternalcapi.compiler_codegen(
+            ast.parse('q = (from x in [1] where x > 0 select x)'), '<instructions>', 0)
+        self.assertTrue(sequence.get_instructions())
+
+    def test_compilation_and_inspection_release_ast(self):
+        tree = ast.parse('q = (from x in [1] select lambda z: x + z)')
+        reference = weakref.ref(tree)
+        code = compile(tree, '<ownership>', 'exec')
+        _inspect(tree)
+        del tree
+        gc.collect()
+        self.assertIsNone(reference())
+        namespace = {}
+        exec(code, namespace)
+        self.assertEqual(next(iter(namespace['q']))(2), 3)
+        for source in ('return (from x in [1] select x)',
+                       '(from x in [1] select f(repeated=1, repeated=2))'):
+            with self.assertRaises(SyntaxError):
+                compile(source, '<failure>', 'exec')
+        self.assertEqual(list(eval('(from x in [2] select x)')), [2])
+
+    def test_driver_ir_disassembly_and_execution(self):
+        driver = Path(os.environ.get('LINQ_DRIVER',
+                      Path(__file__).resolve().parents[1] / 'scripts' / 'linq.py'))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'program.py'
+            (Path(directory) / 'sibling.py').write_text('value = 7\n')
+            path.write_bytes(b'# coding: latin-1\nimport sibling, sys\n'
+                             b'q = (from x in [1, 2] select x + sibling.value)\n'
+                             b'print("caf\xe9", list(q), sys.argv[1:])\n')
+            result = subprocess.run([sys.executable, str(driver), 'ir', str(path)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(json.loads(result.stdout)['queries']), 1)
+            result = subprocess.run([sys.executable, str(driver), 'dis', str(path)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('linq_select', result.stdout)
+            result = subprocess.run([sys.executable, str(driver), 'run', '--optimize', '1',
+                                     str(path), 'argument'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "café [8, 9] ['argument']\n")
 
 
 class QueryBindingTests(unittest.TestCase):
@@ -516,6 +844,7 @@ assert not hasattr(_linq, '_test_marker')
 query = _linq._query([1, 2], (lambda x: x > 1,), lambda x: x * 2, False)
 assert id(type(query)) != {id(type(query))}
 assert list(query) == [4]
+assert list((from x in [1, 2] where x > 1 select x * 2)) == [4]
 '''
         result = support.run_in_subinterp_with_config(
             code, own_gil=True, use_main_obmalloc=False,

@@ -1,5 +1,8 @@
 #include "Python.h"
 #include "pycore_ast.h"           // stmt_ty
+/* BEGIN LINQ override: query scope keys and registration. */
+#include "pycore_linq.h"
+/* END LINQ override */
 #include "pycore_compile.h"       // _PyAST_Preprocess()
 #include "pycore_parser.h"        // _PyParser_ASTFromString()
 #include "pycore_pystate.h"       // _PyThreadState_GET()
@@ -395,6 +398,9 @@ symtable_new(void)
         return NULL;
     }
 
+    /* BEGIN LINQ override: registry ownership. */
+    st->st_linq_queries = NULL;
+    /* END LINQ override */
     st->st_filename = NULL;
     st->st_blocks = NULL;
 
@@ -493,6 +499,9 @@ _PySymtable_Build(mod_ty mod, PyObject *filename, _PyFutureFeatures *future)
 void
 _PySymtable_Free(struct symtable *st)
 {
+    /* BEGIN LINQ override: registry ownership. */
+    Py_XDECREF(st->st_linq_queries);
+    /* END LINQ override */
     Py_XDECREF(st->st_filename);
     Py_XDECREF(st->st_blocks);
     Py_XDECREF(st->st_stack);
@@ -2389,17 +2398,17 @@ symtable_handle_namedexpr(struct symtable *st, expr_ty e)
 
 /* BEGIN LINQ override: clause scopes. */
 static int
-symtable_visit_query_clause(struct symtable *st, expr_ty target,
-                           expr_ty body, const char *name)
+symtable_visit_query_clause(struct symtable *st, expr_ty query,
+                           Py_ssize_t clause, expr_ty body, const char *name)
 {
     PyObject *scope_name = PyUnicode_FromString(name);
     if (scope_name == NULL) {
         return 0;
     }
     Py_ssize_t depth = PyList_GET_SIZE(st->st_stack);
-    /* Clause identity is shared with code generation. */
+    expr_ty target = query->v.QueryExpr.target;
     int ok = symtable_enter_block(st, scope_name, FunctionBlock,
-                                  (void *)body, LOCATION(body));
+                                  _PyLinq_ClauseKey(query, clause), LOCATION(body));
     Py_DECREF(scope_name);
     if (ok) {
         ok = symtable_add_def(st, target->v.Name.id, DEF_PARAM, LOCATION(target)) &&
@@ -2416,16 +2425,18 @@ symtable_visit_query_clause(struct symtable *st, expr_ty target,
 static int
 symtable_visit_query(struct symtable *st, expr_ty e)
 {
-    if (!symtable_visit_expr(st, e->v.QueryExpr.source)) {
+    if (_PyLinq_RegisterQuery(st, e) < 0 ||
+        !symtable_visit_expr(st, e->v.QueryExpr.source)) {
         return 0;
     }
     for (Py_ssize_t i = 0; i < asdl_seq_LEN(e->v.QueryExpr.predicates); i++) {
-        if (!symtable_visit_query_clause(st, e->v.QueryExpr.target,
+        if (!symtable_visit_query_clause(st, e, i,
                 asdl_seq_GET(e->v.QueryExpr.predicates, i), "linq_where")) {
             return 0;
         }
     }
-    return symtable_visit_query_clause(st, e->v.QueryExpr.target,
+    return symtable_visit_query_clause(st, e,
+                                      asdl_seq_LEN(e->v.QueryExpr.predicates),
                                       e->v.QueryExpr.selector, "linq_select");
 }
 /* END LINQ override */
