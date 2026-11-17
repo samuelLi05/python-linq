@@ -14,7 +14,7 @@ from _linq import _inspect
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("ir", "dis", "run"):
+    for name in ("ir", "analyze", "dis", "run"):
         command = commands.add_parser(name)
         command.add_argument("--optimize", type=int, choices=(-1, 0, 1, 2), default=-1)
         command.add_argument("file", type=Path)
@@ -23,10 +23,11 @@ def main():
     args = parser.parse_args()
     path = args.file.resolve()
     source = path.read_bytes()
-    if args.command == "ir":
+    if args.command in ("ir", "analyze"):
         tree = compile(source, str(path), "exec", flags=ast.PyCF_ONLY_AST,
                        dont_inherit=True, optimize=args.optimize)
-        print(json.dumps(_inspect(tree, str(path), optimize=args.optimize), indent=2))
+        report = _inspect(tree, str(path), optimize=args.optimize)
+        print(json.dumps(report["analysis"] if args.command == "analyze" else report, indent=2))
         return
     code = compile(source, str(path), "exec", dont_inherit=True, optimize=args.optimize)
     if args.command == "dis":

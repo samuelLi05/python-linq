@@ -30,6 +30,7 @@ _PyLinq_Free(_PyLinqPlans *plans)
     if (plans == NULL) {
         return;
     }
+    _PyLinq_AnalysisFree(plans->analysis);
     for (Py_ssize_t i = 0; i < plans->count; i++) {
         PyMem_Free(plans->plans[i].operators);
     }
@@ -424,7 +425,11 @@ _PyLinq_Describe(const _PyLinqPlans *plans)
         }
         PyList_SET_ITEM(queries, i, description);
     }
-    result = Py_BuildValue("{s:O}", "queries", queries);
+    PyObject *analysis = _PyLinq_AnalysisDescribe(plans);
+    if (analysis != NULL) {
+        result = Py_BuildValue("{s:O,s:O}", "queries", queries, "analysis", analysis);
+        Py_DECREF(analysis);
+    }
 done:
     Py_XDECREF(queries);
     Py_XDECREF(ids);

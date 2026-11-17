@@ -400,6 +400,7 @@ symtable_new(void)
 
     /* BEGIN LINQ override: registry ownership. */
     st->st_linq_queries = NULL;
+    st->st_linq_functions = NULL;
     /* END LINQ override */
     st->st_filename = NULL;
     st->st_blocks = NULL;
@@ -501,6 +502,7 @@ _PySymtable_Free(struct symtable *st)
 {
     /* BEGIN LINQ override: registry ownership. */
     Py_XDECREF(st->st_linq_queries);
+    Py_XDECREF(st->st_linq_functions);
     /* END LINQ override */
     Py_XDECREF(st->st_filename);
     Py_XDECREF(st->st_blocks);
@@ -1881,6 +1883,11 @@ symtable_visit_stmt(struct symtable *st, stmt_ty s)
             return 0;
         }
         Py_DECREF(new_ste);
+        /* BEGIN LINQ override: function analysis context. */
+        if (_PyLinq_RegisterFunction(st, s) < 0) {
+            return 0;
+        }
+        /* END LINQ override */
         VISIT(st, arguments, s->v.FunctionDef.args);
         VISIT_SEQ(st, stmt, s->v.FunctionDef.body);
         if (!symtable_exit_block(st))
@@ -2240,6 +2247,11 @@ symtable_visit_stmt(struct symtable *st, stmt_ty s)
         Py_DECREF(new_ste);
 
         st->st_cur->ste_coroutine = 1;
+        /* BEGIN LINQ override: function analysis context. */
+        if (_PyLinq_RegisterFunction(st, s) < 0) {
+            return 0;
+        }
+        /* END LINQ override */
         VISIT(st, arguments, s->v.AsyncFunctionDef.args);
         VISIT_SEQ(st, stmt, s->v.AsyncFunctionDef.body);
         if (!symtable_exit_block(st))

@@ -80,18 +80,18 @@ Architecture: [operator-extension boundaries](PLAN.md#modularity-requirements-fo
 
 ## M4: control-flow and data-flow analysis
 
-- [ ] **M4.1** Build the high-level function CFG for supported assignments,
-  expressions, `if`/`else`, returns, and `pass`; conservatively mark unsupported
-  functions/regions without blocking ordinary compilation.
-- [ ] **M4.2** Compute GEN/KILL and reaching definitions to a fixed point; compute
+- [x] **M4.1** Build the high-level function CFG for supported assignments,
+  expressions, `if`/`else`, returns, and `pass`; mark whole functions unknown
+  for unsupported constructs without blocking ordinary compilation.
+- [x] **M4.2** Compute GEN/KILL and reaching definitions to a fixed point; compute
   dominance and binding-aware definition/use information without SSA renaming.
-- [ ] **M4.3** Check unique producer definitions, consumer source use, extra uses,
+- [x] **M4.3** Check unique producer definitions, consumer source use, extra uses,
   reassignment, aliases, and closure capture/escape restrictions.
-- [ ] **M4.4** Classify exact identity projections by binding; require a consumer
+- [x] **M4.4** Classify exact identity projections by binding; require a consumer
   filter and consecutive distinct-name assignments in one block for v1 rewrites.
-- [ ] **M4.5** Expose eligible/ineligible/unknown diagnostics with source locations,
+- [x] **M4.5** Expose eligible/ineligible/unknown diagnostics with source locations,
   reasons, and definition/use evidence through shared compiler/tooling analysis.
-- [ ] **M4.V** Verify positive chains and negative/unknown cases: multiple reaching
+- [x] **M4.V** Verify positive chains and negative/unknown cases: multiple reaching
   definitions, extra uses, transformations, aliases, captures, branches, loops,
   reflection, and unsupported control flow.
 

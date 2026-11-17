@@ -43,7 +43,16 @@ typedef struct {
     _PyLinqExecutionMode mode;
 } _PyLinqPlan;
 
+typedef struct _PyLinqAnalysis _PyLinqAnalysis;
+typedef enum { _PyLinq_ELIGIBLE, _PyLinq_INELIGIBLE, _PyLinq_UNKNOWN } _PyLinqStatus;
 typedef struct {
+    _PyLinqStatus status;
+    const char *reason;
+    Py_ssize_t function, source_use, producer_definition, producer_plan, extra_use;
+} _PyLinqDecision;
+
+typedef struct {
+    _PyLinqAnalysis *analysis;
     PyObject *index;
     _PyLinqPlan *plans;
     Py_ssize_t count;
@@ -60,6 +69,12 @@ _PyLinq_ClauseKey(expr_ty query, Py_ssize_t clause)
     }
     return &query->v.QueryExpr.selector;
 }
+
+int _PyLinq_RegisterFunction(struct symtable *, stmt_ty);
+int _PyLinq_Analyze(struct symtable *, _PyLinqPlans *);
+void _PyLinq_AnalysisFree(_PyLinqAnalysis *);
+PyObject *_PyLinq_AnalysisDescribe(const _PyLinqPlans *);
+const _PyLinqDecision *_PyLinq_Decision(_PyLinqPlans *, expr_ty);
 
 int _PyLinq_RegisterQuery(struct symtable *st, expr_ty query);
 _PyLinqPlans *_PyLinq_Build(struct symtable *st);

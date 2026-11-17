@@ -10,6 +10,7 @@ import subprocess
 import symtable
 import sys
 import tempfile
+import textwrap
 import unittest
 import weakref
 
@@ -422,6 +423,284 @@ def make(values, limit):
                                      str(path), 'argument'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, "café [8, 9] ['argument']\n")
+
+
+class QueryAnalysisTests(unittest.TestCase):
+    producer = 'p = (from x in values where x > 0 select x)'
+    consumer = 'q = (from y in p where y < 10 select y)'
+
+    def inspect_body(self, body):
+        source = 'def example(values, flag=True):\n' + textwrap.indent(textwrap.dedent(body), '    ')
+        return _inspect(ast.parse(source)), source
+
+    def pair(self, before='', between='', after='return list(q)', producer=None, consumer=None):
+        body = '\n'.join(part for part in (before, producer or self.producer, between,
+                         consumer or self.consumer, after) if part)
+        info, source = self.inspect_body(body)
+        return info, info['analysis']['candidates'][-1], source
+
+    def test_adjacent_pair_is_eligible_and_execution_stays_normal(self):
+        info, decision, source = self.pair()
+        self.assertEqual(decision['status'], 'eligible')
+        self.assertEqual(decision['reason'], 'eligible')
+        self.assertEqual(decision['producer_plan'], 0)
+        self.assertTrue(decision['dominates'])
+        self.assertTrue(decision['adjacent'])
+        self.assertEqual(decision['reaching_definitions'], [decision['producer_definition']])
+        self.assertTrue(all(query['mode'] == 'normal' for query in info['queries']))
+        namespace = {}
+        exec(compile(source, '<analysis>', 'exec'), namespace)
+        self.assertEqual(namespace['example']([-1, 1, 3, 20]), [1, 3])
+        instructions = list(dis.get_instructions(namespace['example']))
+        self.assertEqual([op.argval for op in instructions if op.opname == 'IMPORT_FROM'],
+                         ['_query', '_query'])
+
+    def test_multiple_filters_and_identity_only_producer(self):
+        for producer in (self.producer, 'p = (from x in values select x)'):
+            with self.subTest(producer=producer):
+                _, decision, _ = self.pair(producer=producer,
+                    consumer='q = (from y in p where y > 1 where y < 10 select y)')
+                self.assertEqual(decision['status'], 'eligible')
+
+    def test_query_range_variable_can_shadow_source_binding(self):
+        _, decision, _ = self.pair(consumer='q = (from p in p where p < 10 select p)')
+        self.assertEqual(decision['status'], 'eligible')
+
+    def test_branch_pair_dominates_within_its_path(self):
+        info, _ = self.inspect_body('if flag:\n' + textwrap.indent(
+            self.producer + '\n' + self.consumer + '\nreturn list(q)', '    ') + '\nreturn []')
+        decision = info['analysis']['candidates'][-1]
+        self.assertEqual(decision['status'], 'eligible')
+        self.assertTrue(decision['dominates'])
+        function, = info['analysis']['functions']
+        blocks = function['blocks']
+        self.assertEqual(len(blocks[0]['successors']), 2)
+        source_use = function['uses'][decision['source_use']]
+        definition = function['definitions'][decision['producer_definition']]
+        self.assertIn(definition['block'], blocks[source_use['block']]['dominators'])
+
+    def test_branch_join_preserves_ambiguous_definitions(self):
+        info, _ = self.inspect_body('if flag:\n    ' + self.producer +
+            '\nelse:\n    p = (from x in values where x < 0 select x)\n' + self.consumer)
+        decision = info['analysis']['candidates'][-1]
+        self.assertEqual(decision['reason'], 'ambiguous_producer')
+        function, = info['analysis']['functions']
+        reaching = decision['reaching_definitions']
+        self.assertEqual(len(reaching), 2)
+        self.assertEqual({function['definitions'][i]['query'] for i in reaching}, {0, 1})
+        use = function['uses'][decision['source_use']]
+        self.assertTrue(set(reaching).issubset(function['blocks'][use['block']]['in']))
+
+    def test_nested_branch_join_reaches_a_fixed_point(self):
+        info, _ = self.inspect_body('if flag:\n    if values:\n        ' + self.producer +
+            '\n    else:\n        p = (from x in values where x < 0 select x)\n'
+            'else:\n    p = (from x in values select x)\n' + self.consumer)
+        decision = info['analysis']['candidates'][-1]
+        self.assertEqual(decision['reason'], 'ambiguous_producer')
+        self.assertEqual(len(decision['reaching_definitions']), 3)
+        function, = info['analysis']['functions']
+        self.assertEqual({function['definitions'][i]['query']
+                          for i in decision['reaching_definitions']}, {0, 1, 2})
+
+    def test_returning_branch_is_not_a_join_predecessor(self):
+        info, _ = self.inspect_body('if flag:\n    return []\nelse:\n    ' +
+                                    self.producer + '\n' + self.consumer)
+        decision = info['analysis']['candidates'][-1]
+        self.assertEqual(len(decision['reaching_definitions']), 1)
+        self.assertTrue(decision['dominates'])
+        self.assertEqual(decision['reason'], 'not_adjacent')
+
+    def test_unbound_path_is_not_a_unique_producer(self):
+        info, _ = self.inspect_body('if flag:\n    ' + self.producer + '\n' + self.consumer)
+        decision = info['analysis']['candidates'][-1]
+        self.assertEqual(decision['reason'], 'possibly_unbound')
+        function, = info['analysis']['functions']
+        self.assertIn('unbound', [function['definitions'][i]['kind']
+                                 for i in decision['reaching_definitions']])
+
+    def test_gen_kill_and_reads_before_assignment(self):
+        info, decision, _ = self.pair(before='p = 0\nconsume(p)', after='p = 99\nreturn list(q)')
+        self.assertEqual(decision['status'], 'eligible')
+        function, = info['analysis']['functions']
+        p = next(binding for binding in function['bindings'] if binding['name'] == 'p')
+        definitions = [function['definitions'][i] for i in p['definitions']]
+        latest = definitions[-1]['id']
+        block = function['blocks'][0]
+        self.assertIn(latest, block['gen'])
+        self.assertFalse(set(block['gen']) & set(block['kill']))
+        self.assertIn(decision['producer_definition'], block['kill'])
+        self.assertNotIn(decision['producer_definition'], block['out'])
+        info, decision, _ = self.pair(between='p = p')
+        self.assertEqual(decision['reason'], 'not_query_definition')
+        function, = info['analysis']['functions']
+        alias = next(use for use in function['uses'] if use['kind'] == 'alias')
+        reaching, = alias['reaching_definitions']
+        self.assertEqual(function['definitions'][reaching]['query'], 0)
+
+    def test_reassigned_query_uses_latest_definition(self):
+        info, decision, _ = self.pair(before=self.producer)
+        self.assertEqual(decision['status'], 'eligible')
+        self.assertEqual(decision['producer_plan'], 1)
+        self.assertEqual(len(decision['reaching_definitions']), 1)
+
+    def test_aliases_and_escapes_are_extra_uses(self):
+        for extra, reason in (('alias = p', 'producer_aliased'),
+                              ('consume(p)', 'producer_extra_use'),
+                              ('return p, q', 'producer_extra_use')):
+            with self.subTest(extra=extra):
+                _, decision, _ = self.pair(after=extra)
+                self.assertEqual(decision['status'], 'ineligible')
+                self.assertEqual(decision['reason'], reason)
+                self.assertIsNotNone(decision['extra_use'])
+
+    def test_shared_producer_is_not_eligible(self):
+        _, decision, _ = self.pair(after='r = (from z in p where z != 0 select z)')
+        self.assertEqual(decision['reason'], 'producer_extra_use')
+
+    def test_captures_are_separate_from_eager_reads(self):
+        info, decision, _ = self.pair(after='capture = lambda: p\nreturn list(q)')
+        self.assertEqual(decision['reason'], 'producer_captured')
+        function, = info['analysis']['functions']
+        self.assertTrue(next(b for b in function['bindings'] if b['name'] == 'p')['captured'])
+        info, decision, _ = self.pair(before='limit = 5',
+            consumer='q = (from y in p where y < limit select y)')
+        self.assertEqual(decision['status'], 'eligible')
+        function, = info['analysis']['functions']
+        limit = next(b['id'] for b in function['bindings'] if b['name'] == 'limit')
+        self.assertFalse(any(use['binding'] == limit for use in function['uses']))
+
+    def test_binding_shadowing_does_not_count_as_capture(self):
+        _, decision, _ = self.pair(after='identity = lambda p: p\nreturn list(q)')
+        self.assertEqual(decision['status'], 'eligible')
+
+    def test_projection_filter_adjacency_and_target_requirements(self):
+        cases = (
+            {'producer': 'p = (from x in values select x + 1)', 'reason': 'producer_projection'},
+            {'consumer': 'q = (from y in p where y < 10 select y * 2)', 'reason': 'consumer_projection'},
+            {'consumer': 'q = (from y in p select y)', 'reason': 'consumer_without_filter'},
+            {'between': 'pass', 'reason': 'not_adjacent'},
+            {'consumer': 'p = (from y in p where y < 10 select y)', 'after': '', 'reason': 'same_binding'},
+        )
+        for options in cases:
+            options = dict(options)
+            reason = options.pop('reason')
+            with self.subTest(reason=reason):
+                _, decision, _ = self.pair(**options)
+                self.assertEqual(decision['status'], 'ineligible')
+                self.assertEqual(decision['reason'], reason)
+
+    def test_unique_dominating_definition_can_still_fail_adjacency(self):
+        info, _ = self.inspect_body(self.producer + '\nif flag:\n    ' + self.consumer)
+        decision = info['analysis']['candidates'][-1]
+        self.assertEqual(decision['reason'], 'not_adjacent')
+        self.assertTrue(decision['dominates'])
+        self.assertFalse(decision['adjacent'])
+
+    def test_unsupported_construct_makes_whole_function_unknown(self):
+        for statement in ('for ignored in []:\n    pass', 'while flag:\n    break',
+                          'try:\n    pass\nexcept Exception:\n    pass',
+                          'with context():\n    pass', 'import math',
+                          'def nested():\n    pass', 'a, b = values',
+                          'temporary = [x for x in values]', 'temporary = (a := 1)'):
+            with self.subTest(statement=statement):
+                info, decision, _ = self.pair(after='return list(q)\n' + statement)
+                self.assertEqual(decision['status'], 'unknown')
+                function, = info['analysis']['functions']
+                self.assertEqual(function['status'], 'unknown')
+                self.assertTrue(function['reasons'])
+                self.assertNotIn('blocks', function)
+                self.assertNotIn('definitions', function)
+
+    def test_dynamic_namespace_and_frame_access_are_unknown(self):
+        for expression in ('locals()', 'globals()', 'vars()', 'dir()', 'exec("pass")',
+                           'eval("1")', 'alias = locals', 'sys._getframe()',
+                           'inspect.currentframe()', 'frame.f_locals',
+                           'callback = lambda: (temporary := locals())'):
+            with self.subTest(expression=expression):
+                _, decision, _ = self.pair(after=expression)
+                self.assertEqual(decision['status'], 'unknown')
+
+    def test_nested_function_analysis_is_independent(self):
+        info = _inspect(ast.parse("""
+def outer(values):
+    p = (from x in values select x)
+    def inner(values):
+        p = (from x in values where x > 0 select x)
+        q = (from y in p where y < 10 select y)
+        return list(q)
+    q = (from y in p where y < 10 select y)
+    return inner
+"""))
+        functions = {function['name']: function for function in info['analysis']['functions']}
+        self.assertEqual(functions['outer']['status'], 'unknown')
+        self.assertEqual(functions['inner']['status'], 'analyzed')
+        decisions = info['analysis']['candidates']
+        self.assertEqual([item['status'] for item in decisions],
+                         ['unknown', 'ineligible', 'eligible', 'unknown'])
+
+    def test_async_generators_and_other_scopes_are_unknown(self):
+        for prefix, tail in (('async def f(values):', 'return q'),
+                             ('def f(values):', 'yield q')):
+            source = prefix + '\n' + textwrap.indent(self.producer + '\n' + self.consumer + '\n' + tail, '    ')
+            info = _inspect(ast.parse(source))
+            self.assertEqual(info['analysis']['candidates'][-1]['status'], 'unknown')
+        for source in (self.producer + '\n' + self.consumer,
+                       'class C:\n' + textwrap.indent(self.producer + '\n' + self.consumer, '    '),
+                       'f = lambda values: (from x in values select x)'):
+            self.assertTrue(all(item['reason'] == 'unsupported_scope'
+                                for item in _inspect(ast.parse(source))['analysis']['candidates']))
+
+    def test_global_nonlocal_and_class_mangled_bindings(self):
+        info, _ = self.inspect_body('global p\n' + self.consumer)
+        self.assertEqual(info['analysis']['candidates'][-1]['reason'], 'nonlocal_source_binding')
+        source = 'def outer(p):\n    def inner(values):\n        nonlocal p\n        ' + self.consumer
+        info = _inspect(ast.parse(source))
+        self.assertEqual(info['analysis']['candidates'][-1]['reason'], 'nonlocal_source_binding')
+        source = 'class C:\n    def f(self, values):\n        __p = (from __x in values select _C__x)\n        q = (from y in __p where y > 0 select y)'
+        info = _inspect(ast.parse(source))
+        self.assertEqual(info['analysis']['candidates'][-1]['status'], 'eligible')
+
+    def test_reports_are_deterministic_and_do_not_execute_source(self):
+        _, _, source = self.pair(before='missing_function()', after='return missing_result(q)')
+        tree = ast.parse(source)
+        before = ast.dump(tree, include_attributes=True)
+        first = _inspect(tree)
+        self.assertEqual(first, _inspect(tree))
+        self.assertEqual(ast.dump(tree, include_attributes=True), before)
+        self.assertEqual(first['analysis']['candidates'][-1]['status'], 'eligible')
+        for level in (0, 1, 2):
+            self.assertEqual(_inspect(tree, optimize=level)['analysis']['candidates'][-1]['status'], 'eligible')
+
+    def test_unreachable_queries_are_not_eligible(self):
+        info, _ = self.inspect_body('return []\n' + self.producer + '\n' + self.consumer)
+        self.assertEqual(info['analysis']['candidates'][-1]['reason'], 'unreachable')
+        function, = info['analysis']['functions']
+        unreachable = [block for block in function['blocks'] if not block['reachable']]
+        self.assertTrue(unreachable)
+        self.assertTrue(all(not b['in'] and not b['out'] and not b['dominators'] for b in unreachable))
+
+    def test_large_cfg_and_definition_sets(self):
+        before = '\n'.join('a' + str(i) + ' = ' + str(i) for i in range(150))
+        branches = '\n'.join('if flag:\n    pass\nelse:\n    pass' for _ in range(30))
+        info, decision, _ = self.pair(before=before + '\n' + branches)
+        self.assertEqual(decision['status'], 'eligible')
+        function, = info['analysis']['functions']
+        self.assertGreater(len(function['definitions']), 256)
+        self.assertGreater(len(function['blocks']), 64)
+
+    def test_analysis_driver_reports_without_execution(self):
+        driver = Path(os.environ.get('LINQ_DRIVER',
+                      Path(__file__).resolve().parents[1] / 'scripts' / 'linq.py'))
+        _, _, source = self.pair()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'analysis.py'
+            path.write_text('raise RuntimeError("must not execute")\n' + source)
+            result = subprocess.run([sys.executable, str(driver), 'analyze', str(path)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report['candidates'][-1]['status'], 'eligible')
+            self.assertEqual(report['functions'][0]['status'], 'analyzed')
 
 
 class QueryBindingTests(unittest.TestCase):

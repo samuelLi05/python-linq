@@ -2,8 +2,8 @@
 
 A CPython 3.14.0 compiler project adding native declarative queries over lists.
 Query parsing, AST tooling, binding, compiler-owned query IR, native lowering,
-and a lazy C runtime are implemented. Query-merge analysis and fusion remain
-to be implemented.
+a lazy C runtime, and control/data-flow analysis are implemented. Opt-in query
+fusion remains to be implemented.
 
 Compiler changes are tracked as complete replacement files under `patches/`,
 using CPython-relative paths. The ignored `cpython/` checkout is reference source;
@@ -43,10 +43,16 @@ Use the built interpreter with a source file containing query syntax:
 
 ```bash
 ./build/python scripts/linq.py ir path/to/program.py
+./build/python scripts/linq.py analyze path/to/program.py
 ./build/python scripts/linq.py dis path/to/program.py
 ./build/python scripts/linq.py run path/to/program.py argument
 ```
 
-`ir` prints the shared compiler plans; `dis` shows bytecode and clause code
-objects. Neither executes the inspected program. All subcommands accept
+`ir` prints compiler plans and analysis; `analyze` prints CFG/data-flow evidence
+and fusion eligibility. `dis` shows bytecode and clause code objects. These
+inspection commands do not execute the submitted program. All subcommands accept
 `--optimize {-1,0,1,2}` before the filename; `-1` uses the interpreter setting.
+
+Analysis reports eligible, ineligible, or unknown candidates. Unsupported
+constructs make the whole function unknown while its queries continue executing
+normally. All query plans still use unfused execution.

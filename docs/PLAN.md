@@ -3,8 +3,8 @@
 Implementation tracking: [CHECKLIST.md](CHECKLIST.md).
 Build instructions: [SETUP.md](SETUP.md).
 Status: the frontend, AST tooling, binding, query IR, native syntax lowering,
-and lazy C runtime are implemented. Control/data-flow analysis and fusion remain
-pending.
+lazy C runtime, and control/data-flow analysis are implemented. Opt-in fusion
+remains pending.
 
 ## Goal, priorities, and boundaries
 
@@ -126,7 +126,8 @@ Every query gets a plan, including when fusion is disabled. The initial IR has:
 
 - **Source:** the source expression evaluated at construction.
 - **QueryInput:** a plan reference for a directly nested query source. Named
-  sources retain binding information; M4 resolves query-producing definitions.
+  sources retain binding information; analysis records resolved definitions and
+  producer-plan references separately from execution mode.
 - **Filter:** an ordered predicate, binding information, and source location.
 - **Project:** a selector, binding information, source location, and a flag
   identifying an exact projection of the range variable.
@@ -144,10 +145,29 @@ Compiler plans borrow AST and symbol entries and are freed with the compiler;
 only generated code and runtime objects survive compilation.
 
 The function CFG is a high-level analysis model distinct from CPython's later
-bytecode-instruction CFG. Initially support plain assignments, expression
-statements, `if`/`else`, returns, and `pass` in ordinary synchronous,
-non-generator functions. Unsupported constructs produce conservative unknown
-results; all otherwise valid query programs still compile without fusion.
+bytecode-instruction CFG. It supports single-name local assignments, expression
+statements, `if`/`else`, returns, and `pass` in synchronous, non-generator
+functions. Global/nonlocal declarations contribute binding information without
+executable operations; stores outside the function's local bindings are
+unsupported. Unsupported constructs make the whole function unknown, including
+occurrences after a return. Nested functions are assessed independently. All
+otherwise valid query programs still compile without fusion.
+
+Binding retains function AST identities, symbol entries, and mangling context.
+Analysis runs after query planning and before instruction generation. Native
+bitsets and a worklist solve reaching definitions; predecessor intersection
+solves dominance. Parameters have entry definitions, and other locals begin
+with unbound definitions. Per-statement replay reads each assignment's right-hand
+side before recording its new definition. Unreachable blocks have no solved
+reaching or dominance facts.
+
+Deferred clause bodies do not count as eager reads. Symbol-table cell bindings
+identify producer captures. Direct aliases and escapes are extra uses of their
+reaching definitions; general heap alias analysis is not implemented. Eager
+comprehensions, assignment expressions, suspension, unsupported statements,
+recognized dynamic namespace access, and explicit frame access make the function
+unknown. Deferred clause comprehensions remain executable and are not analyzed
+as enclosing-function control flow.
 
 Give local assignments definition IDs and solve reaching definitions:
 
@@ -165,7 +185,13 @@ Diagnostics classify pairs as eligible, ineligible, or unknown, with source
 locations and supporting definition/use evidence. Direct reflective/dynamic
 constructs, unsupported control flow, and unresolvable alias/capture cases are
 unknown. Known extra uses and nonidentity projections are ineligible for v1.
-Analysis and diagnostics must use the same implementation as the compiler pass.
+Analysis and diagnostics use the same implementation as the compiler pass.
+Whole-function unknown takes precedence over individual candidate checks. Known
+capture, ambiguity, unbound input, nonidentity projection, extra-use, and
+adjacency failures are ineligible for the v1 pattern. A candidate describes
+merging a query with its input; ineligible does not mean the query is invalid.
+Reassignment is definition-sensitive: uses of earlier/later values are not
+attributed to the selected producer. No query is fused during M4.
 
 ## Fusion: transformation, proof, and limits
 
@@ -247,10 +273,13 @@ ordinary `-O`, dynamically compiled future units, or imported modules. AST-only
 compilation keeps explicit query structure; fusion operates on compiler-owned
 query IR before instruction generation.
 
-The `scripts/linq.py` driver provides `run`, `ir`, and `dis` subcommands.
+The `scripts/linq.py` driver provides `run`, `ir`, `analyze`, and `dis` subcommands.
 IR inspection uses `_linq._inspect` and the same C compiler setup and planner as
-normal compilation. Eligibility explanations will extend that shared implementation
-in M4. Explicitly compile
+normal compilation. The additive `analysis` result exposes CFGs, definitions,
+uses, reaching sets, dominators, eligibility reasons, and evidence. Unsupported
+functions expose reasons and locations without partial solver facts. `analyze`
+prints this analysis result alone. All IDs are deterministic within the report.
+Explicitly compile
 source for optimized/unoptimized comparisons, without introducing a separate
 bytecode-cache mode. Inspection must not execute the inspected program.
 

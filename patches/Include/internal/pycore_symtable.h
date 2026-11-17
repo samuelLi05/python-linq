@@ -75,6 +75,7 @@ struct symtable {
     struct _symtable_entry *st_top; /* symbol table entry for module */
     /* BEGIN LINQ override: bound query registry. */
     PyObject *st_linq_queries;
+    PyObject *st_linq_functions;
     /* END LINQ override */
     PyObject *st_blocks;            /* dict: map AST node addresses
                                      *       to symbol table entries */

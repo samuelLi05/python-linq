@@ -150,7 +150,7 @@ compiler_setup(compiler *c, mod_ty mod, PyObject *filename,
     }
     /* BEGIN LINQ override: plan after binding. */
     c->c_linq = _PyLinq_Build(c->c_st);
-    if (c->c_linq == NULL) {
+    if (c->c_linq == NULL || _PyLinq_Analyze(c->c_st, c->c_linq) < 0) {
         return ERROR;
     }
     /* END LINQ override */

@@ -116,7 +116,8 @@ bazel test //:build_smoke --test_output=all
 artifact. It rejects links in the archive, extracts it into a temporary directory,
 and runs `tests/test_queries.py` using that distribution's `bin/python-linq`.
 The suite covers frontend behavior, scope binding, AST tooling, native query
-execution, IR inspection, generated clause functions, driver behavior, and runtime
+execution, IR/CFG/data-flow inspection, eligibility decisions, generated clause
+functions, driver behavior, and runtime
 results, timing, iteration, failures, ownership, and subinterpreters.
 
 To inspect that AST directly:
@@ -130,6 +131,7 @@ or execute a source file with:
 
 ```bash
 ./build/python scripts/linq.py ir path/to/program.py
+./build/python scripts/linq.py analyze path/to/program.py
 ./build/python scripts/linq.py dis path/to/program.py
 ./build/python scripts/linq.py run path/to/program.py
 ```

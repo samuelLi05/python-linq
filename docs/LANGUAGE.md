@@ -6,7 +6,8 @@ The compiler parses, validates, binds, plans, and lowers filtering/projection
 queries. Native query expressions execute without an explicit `_linq` import.
 Each clause compiles to an ordinary Python function; the native `_linq` runtime
 retains those functions and executes them lazily. Normal execution does not fuse
-query pipelines. Query-merge analysis and opt-in fusion remain pending.
+query pipelines. Control/data-flow analysis reports fusion eligibility; opt-in
+fusion remains pending.
 
 ## Syntax
 
@@ -158,18 +159,77 @@ A named source includes its normalized binding name and scope category; a direct
 query source includes `input_plan`. Filters and projections include scope,
 parameter, and sorted free-variable captures. Projections include `identity`.
 Identity means a load of the clause's own parameter, including class-name
-mangling. Named sources are not assigned producer definitions until M4 analysis.
-All current plans use normal execution mode.
+mangling. The additive `analysis` result records resolved producer definitions
+and query-plan references for named sources. The source operator's `input_plan`
+continues to describe directly nested query syntax. All plans use normal
+execution mode, including those eligible for future fusion.
 
 The source driver uses the built interpreter:
 
 ```bash
 ./build/python scripts/linq.py ir path/to/program.py
+./build/python scripts/linq.py analyze path/to/program.py
 ./build/python scripts/linq.py dis path/to/program.py
 ./build/python scripts/linq.py run path/to/program.py argument
 ```
 
-Put `--optimize {-1,0,1,2}` before the filename. IR output is JSON. Disassembly
+Put `--optimize {-1,0,1,2}` before the filename. IR and analysis output are JSON. Disassembly
 includes nested clause code objects. Only `run` executes the program, with script
 arguments and sibling imports available. These commands do not write bytecode
 caches for the submitted source file.
+
+## Query-merge analysis
+
+The inspector's `analysis` dictionary contains `functions` and `candidates`.
+`analyze` prints that dictionary without executing the submitted program.
+
+A function record has a report-local `id`, scope `name`, source `location`,
+`status`, and `reasons`. Supported functions have status `analyzed` and include:
+
+- `entry`/`exit` block IDs and `blocks` with statement locations, sorted edges,
+  reachability, `gen`, `kill`, `in`, `out`, and `dominators` sets.
+- `bindings` with normalized names, capture flags, and definition IDs.
+- `definitions` with binding, kind (`parameter`, `unbound`, or `assignment`),
+  block, statement position, query-plan reference, and location. Entry definitions
+  have null block/position fields; their locations identify the function.
+- `uses` with binding, kind (`read`, `query_source`, `alias`, or `escape`), block,
+  position, optional query reference, location, and reaching definition IDs.
+
+Binding, definition, use, and block IDs are local to their function. Function and
+query-plan IDs are local to the whole report. Sets are sorted integer lists.
+Unreachable blocks have empty `in`, `out`, and dominance sets. `GEN` retains the
+last definition of each assigned binding; `KILL` excludes those generated facts.
+
+Each candidate considers a query as a consumer of its input. Its `consumer`
+references the query plan. It reports `status` (`eligible`, `ineligible`, or
+`unknown`), a stable `reason` code, location, function ID, and available evidence:
+source use, reaching definitions, producer definition/plan, extra use, dominance,
+and adjacency. Null IDs mean no corresponding fact is established. A first query
+whose source is a parameter is normally ineligible as a merge consumer; that
+verdict does not prevent it serving as another query's producer.
+
+Eligibility requires consecutive distinct-local-name query assignments in one
+block, one initialized reaching producer that dominates the consumer, no other
+producer uses or captures, identity selectors, and at least one consumer filter.
+Reasons distinguish ambiguity, unbound paths, nonquery definitions, capture,
+alias/extra uses, transformed projections, missing filters, and adjacency failure.
+
+Unsupported statements, targets, eager comprehensions, binding/suspension
+expressions, async/generator functions, recognized dynamic namespace operations,
+and explicit frame access make the whole function `unknown`. Such function
+records expose reason codes and locations and omit partial CFG/solver results.
+The CFG describes normal flow and explicit returns; uncaught exceptions leave
+the function, and exception handlers are outside this subset. This includes
+unreachable unsupported statements. Ordinary query execution is
+preserved, and nested function bodies are assessed independently. Module, class,
+lambda, and implicit clause scopes are outside v1 CFG analysis.
+
+The namespace recognizer conservatively flags loads named `exec`, `eval`,
+`locals`, `globals`, `vars`, and `dir`, and attributes named `_getframe`,
+`currentframe`, `f_locals`, and `f_globals`, even when shadowed. Arbitrary callee
+purity, hidden caller-frame reflection, tracing observations, and monkey-patched
+private runtime internals are outside the supported proof model. Query callbacks
+remain deferred; unrelated captures do not prevent eligibility.
+
+The analysis does not rename variables, insert SSA phi nodes, change bytecode
+lowering, or enable fusion. Execution mode remains `normal`.
