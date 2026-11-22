@@ -1,6 +1,7 @@
 """Verify declared source overrides and the real, built CPython runtime."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -16,6 +17,7 @@ def main():
     parser.add_argument("--distribution", required=True)
     parser.add_argument("--tests", required=True)
     parser.add_argument("--driver", required=True)
+    parser.add_argument("--demo", action="append", default=[])
     parser.add_argument("--override", action="append", default=[])
     args = parser.parse_args()
     locations = runfiles.Create()
@@ -42,6 +44,10 @@ def main():
         runtime = Path(directory) / "python-linq"
         env = {name: value for name, value in os.environ.items() if not name.startswith("PYTHON")}
         env["LINQ_DRIVER"] = str(locate(args.driver))
+        env["LINQ_DEMOS"] = json.dumps({
+            name: str(locate(location))
+            for name, location in (entry.split("=", 1) for entry in args.demo)
+        })
         result = subprocess.run(
             [str(runtime / "bin/python-linq"), "-s", str(locate(args.tests)), "-v"],
             env=env, cwd=directory, text=True, capture_output=True,

@@ -318,3 +318,21 @@ all items and a consumer filter accepting even items, full consumption construct
 two query objects in both modes. Iterator-chain construction falls from two to
 one, projection-stage allocation from two to one, and projection calls from six
 to two. These are structural reductions, not elapsed-time benchmark results.
+
+## Compact inspection views
+
+The `ir`, `analyze`, and `dis` driver commands accept `--summary`; omitting it
+preserves full JSON or disassembly output. Summary commands do not execute the
+submitted program.
+
+- IR rows identify query/owner/location, mode, source, filter count, identity
+  metadata, and selected producer. Applied rewrites show before/after modes.
+- Analysis rows report each query as a merge consumer, with its native status,
+  reason code, producer when resolved, and reaching-definition IDs when known.
+  Unsupported function reasons are also shown.
+- Disassembly rows come from compiled instructions and nested code objects.
+  They report actual runtime-factory imports and clause parameters/free variables.
+
+These views do not repeat semantic analysis in Python or change compiler flags,
+eligibility, or execution behavior. Runnable examples and expected observations
+are in [the demo guide](../demos/README.md).

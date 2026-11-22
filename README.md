@@ -3,8 +3,9 @@
 A CPython 3.14.0 compiler project adding native declarative queries over lists.
 Query parsing, AST tooling, binding, compiler-owned query IR, native lowering,
 a lazy C runtime, control/data-flow analysis, and guarded opt-in filter fusion
-are implemented. Integration, platform validation, and performance measurements
-remain in M6.
+are implemented. The runnable [demo guide](demos/README.md) covers the base
+language, analysis limits, and opt-in fusion. Broader release validation remains
+in the [backlog](docs/CHECKLIST.md#deferred-validation).
 
 Compiler changes are tracked as complete replacement files under `patches/`,
 using CPython-relative paths. The ignored `cpython/` checkout is reference source;
@@ -49,6 +50,7 @@ Use the built interpreter with a source file containing query syntax:
 ./build/python scripts/linq.py run path/to/program.py argument
 ```
 
+Add `--summary` to `ir`, `analyze`, or `dis` for compact views.
 `ir` prints compiler plans and analysis; `analyze` prints CFG/data-flow evidence
 and fusion eligibility. `dis` shows bytecode and clause code objects. These
 inspection commands do not execute the submitted program. All subcommands accept
@@ -68,3 +70,15 @@ an explicit source compilation through the driver:
 Use `--no-fusion` for the normal path. IR output includes before/after rewrite
 snapshots. Direct callers can use `compile(..., flags=ast.PyCF_LINQ_FUSION)`.
 The flag does not implicitly enable fusion in imports or later dynamic compilation.
+
+## Run the examples
+
+```bash
+./build/python demos/basic.py
+./build/python scripts/linq.py analyze --summary demos/analysis.py
+./build/python scripts/linq.py ir --fusion --summary demos/fusion.py
+./build/python scripts/linq.py run --fusion demos/fusion.py --counts
+```
+
+The [demo guide](demos/README.md) includes expected output, normal/fused
+comparisons, and preflight commands. It uses the existing compiler and runtime.

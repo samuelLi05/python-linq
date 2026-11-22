@@ -113,6 +113,8 @@ cpython_launcher(
     runtime = ":runtime",
 )
 
+DEMO_FILES = glob(["demos/*.py"])
+
 py_test(
     name = "build_smoke",
     size = "small",
@@ -125,9 +127,12 @@ py_test(
         "--tests=$(rlocationpath tests/test_queries.py)",
         "--driver=$(rlocationpath scripts/linq.py)",
     ] + [
+        "--demo=" + file[len("demos/"):] + "=$(rlocationpath " + file + ")"
+        for file in DEMO_FILES
+    ] + [
         "--override=" + file[len("patches/"):] + "=$(rlocationpath " + file + ")"
         for file in glob(["patches/**"])
     ],
-    data = [":source_archive", ":dist", "tests/test_queries.py", "scripts/linq.py"] + glob(["patches/**"]),
+    data = [":source_archive", ":dist", "tests/test_queries.py", "scripts/linq.py"] + DEMO_FILES + glob(["patches/**"]),
     deps = ["@rules_python//python/runfiles"],
 )

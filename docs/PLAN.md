@@ -4,8 +4,8 @@ Implementation tracking: [CHECKLIST.md](CHECKLIST.md).
 Build instructions: [SETUP.md](SETUP.md).
 Status: the frontend, AST tooling, binding, query IR, native syntax lowering,
 lazy C runtime, control/data-flow analysis, and guarded opt-in fusion are
-implemented. Broader integration, portability, and performance validation remain
-in M6.
+implemented. M6 delivers the runnable defense demonstration and code-explanation
+material. Broader release validation remains a separate backlog.
 
 ## Goal, priorities, and boundaries
 
@@ -302,7 +302,28 @@ bytecode-cache mode. Inspection must not execute the inspected program.
 | M3 | Unoptimized query IR and lowering | Native filtering/projection executes through explicit IR and normal runtime factories. |
 | M4 | Control-flow/data-flow analysis | Shared compiler/tooling analysis explains eligible, ineligible, and unknown pairs with evidence. |
 | M5 | Bounded fusion | Proven candidates select fused lowering; equivalence and structural optimization evidence pass. |
-| M6 | Integration and validation | Platform, regression, ownership, performance, and clean-reconstruction checks pass. |
+| M6 | Runnable demo and code explanation | Readable examples, compact inspection, normal/fused evidence, bounded artifact tests, and preparation material are verified. |
+
+M6 is scoped to a basic runnable demonstration using the existing language and
+optimizer, not new operators or wider fusion analysis. The defense slot is
+20 minutes: rehearse a five-minute demonstration, five minutes of explanation,
+eight minutes for a no-AI edit/build/check, and two minutes of buffer. Build and
+prepare dependencies before arrival.
+
+Track three readable examples for base semantics, a proven fusion pair, and
+ineligible/unknown cases. Compact driver views use the existing native reports
+and compiled instructions; full report modes remain available. Verify examples
+against exported and packaged interpreters, including callback timing and actual
+projection-work reduction. Commands and expected behavior live in
+[the demo guide](../demos/README.md).
+
+Personal rehearsal and compiler study remain separate from automated demo
+verification. Passing tests cannot establish that a person can explain or modify
+the code without AI. Reference-leak audits, remaining feature coverage, the full
+CPython suite, automated macOS/Linux and manual WSL validation, benchmarks, and
+clean-environment reconstruction remain unchecked in
+[deferred validation](CHECKLIST.md#deferred-validation). Required platform goals
+are unchanged; the demo gate does not establish release readiness.
 
 The ignored `cpython/` checkout is optional reference source and remains
 unmodified. The build consumes a checksum-pinned CPython v3.14.0 release archive
@@ -320,8 +341,9 @@ artifacts. The root `build.sh` delegates to Bazel.
 The current delivery gate compares every override with the source artifact and
 runs the tracked query suite against the built debug interpreter and extracted
 distribution. It covers native syntax execution, frontend/binding/tooling,
-IR inspection, driver behavior, and direct runtime semantics. Broader
-semantic and platform verification remains in later milestones.
+IR inspection, driver behavior, and direct runtime semantics. The demo gate
+extends this with declared example inputs. Broader semantic and platform
+verification remains in the separate validation backlog.
 
 Verification records contain test commands and results, skips/failures, relevant
 commits, and known limitations.

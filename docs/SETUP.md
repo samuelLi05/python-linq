@@ -117,9 +117,10 @@ artifact. It rejects links in the archive, extracts it into a temporary director
 and runs `tests/test_queries.py` using that distribution's `bin/python-linq`.
 The suite covers frontend behavior, scope binding, AST tooling, native query
 execution, guarded fusion/equivalence, IR/CFG/data-flow inspection, eligibility
-decisions, generated clause
-functions, driver behavior, and runtime
-results, timing, iteration, failures, ownership, and subinterpreters.
+decisions, generated clause functions, driver behavior, runtime results, timing,
+iteration, failures, ownership, and subinterpreters. Demo sources
+are declared Bazel inputs and their runfile paths are passed to the same suite;
+packaged tests do not fall back to discovering demos in the checkout.
 
 To inspect that AST directly:
 
@@ -182,3 +183,41 @@ Build timestamps in the interpreter version are deliberately redacted.
 Linux and WSL require separate runs on those platforms. This historical
 build-verification record predates native syntax execution; use the tracked
 query suite above to verify the current compiler and runtime.
+
+## Demo preflight
+
+The [demo guide](../demos/README.md) provides short programs, exact commands,
+expected outputs, and normal/fused comparisons. Build and run its preflight
+commands before the defense; use the exported interpreter for the presentation.
+
+`--summary` gives compact views without executing the inspected program:
+
+```bash
+./build/python demos/basic.py
+./build/python scripts/linq.py analyze --summary demos/analysis.py
+./build/python scripts/linq.py ir --fusion --summary demos/fusion.py
+./build/python scripts/linq.py dis --fusion --summary demos/fusion.py
+```
+
+Native compiler edits still rebuild through `./build.sh`. A warm unchanged build
+checks/exports existing artifacts; its duration is not a measurement of a native
+compiler edit. Measure changed-source rebuild latency on the defense machine.
+Do not clear caches or defer dependency installation until the presentation.
+
+This bounded demo gate does not complete the separate release-validation
+backlog or the manual no-AI rehearsal tasks.
+
+### Bounded demo verification
+
+Verified on the current macOS debug build:
+
+| Check | Result |
+| --- | --- |
+| `./build.sh` | Cached native target succeeded; runtime and archive exported. |
+| `./build/python tests/test_queries.py -v` | 107 tests passed, including executable demos and compact inspection. |
+| `bazel test //:build_smoke --test_output=all` | All 23 overrides matched; 107 tests passed on the extracted interpreter with declared demo inputs. |
+| Eight suites listed in the demo preflight | 851 tests run, three skipped; all eight suites passed. |
+
+The cached build is not a clean reconstruction or a changed-source timing
+measurement. No-AI rehearsal, broader platform coverage, full regressions, leak
+audits, and benchmark claims are not established by these results.

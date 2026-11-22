@@ -1,6 +1,8 @@
 """Functional checks for native queries, compiler inspection, and the C runtime."""
 
 import ast
+import contextlib
+import io
 import dis
 import json
 import os
@@ -1105,6 +1107,139 @@ assert namespace['make']([1, 2]) == [2]
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, '[2, 4]\n')
             self.assertFalse((Path(directory) / '__pycache__').exists())
+
+
+class QueryDemoTests(unittest.TestCase):
+    def demo(self, name):
+        if 'LINQ_DEMOS' in os.environ:
+            return Path(json.loads(os.environ['LINQ_DEMOS'])[name])
+        return Path(__file__).resolve().parents[1] / 'demos' / name
+
+    def driver(self, command, path, *options, program_args=()):
+        driver = Path(os.environ.get('LINQ_DRIVER',
+                      Path(__file__).resolve().parents[1] / 'scripts' / 'linq.py'))
+        result = subprocess.run([sys.executable, str(driver), command, *options,
+                                 str(path), *program_args], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        return result.stdout
+
+    def test_basic_demo_observes_deferred_execution(self):
+        path = self.demo('basic.py')
+        expected = ('before: []\nfirst: 160\nevents: [(50, False), (80, True)]\n'
+                    'remaining: [180, 160]\n')
+        result = subprocess.run([sys.executable, str(path)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, expected)
+        for option in ('--no-fusion', '--fusion'):
+            self.assertEqual(self.driver('run', path, option), expected)
+
+    def test_fusion_demo_values_and_structural_counts(self):
+        import _linq
+        path = self.demo('fusion.py')
+        for option in ('--no-fusion', '--fusion'):
+            with self.subTest(option=option):
+                self.assertEqual(self.driver('run', path, option), '[2, 4]\n')
+                if hasattr(_linq, '_test_counters'):
+                    fused = option == '--fusion'
+                    output = self.driver('run', path, option, program_args=('--counts',))
+                    self.assertEqual(output, '[2, 4]\nquery objects: 2\n'
+                                     f'projection stages: {1 if fused else 2}\n'
+                                     f'projection calls: {2 if fused else 6}\n')
+
+    def test_analysis_demo_is_executable_in_both_modes(self):
+        path = self.demo('analysis.py')
+        expected = ('positive branch: [2, 4]\nnegative branch: [-4, -2]\n'
+                    'unsupported flow: [2, 4]\n')
+        for option in ('--no-fusion', '--fusion'):
+            self.assertEqual(self.driver('run', path, option), expected)
+        report = _inspect(ast.parse(path.read_bytes()), fusion=True)
+        self.assertEqual(report['optimization']['rewrites'], [])
+        functions = {f['id']: f['name'] for f in report['analysis']['functions']}
+        candidates = report['analysis']['candidates']
+        ambiguous = [c for c in candidates if functions[c['function']] == 'ambiguous']
+        self.assertEqual(ambiguous[-1]['reason'], 'ambiguous_producer')
+        self.assertEqual(len(ambiguous[-1]['reaching_definitions']), 2)
+        self.assertTrue(all(c['status'] == 'unknown' for c in candidates
+                            if functions[c['function']] == 'unsupported'))
+
+    def test_ir_summary_preserves_native_plan_information(self):
+        path = self.demo('fusion.py')
+        for option in ('--no-fusion', '--fusion'):
+            report = json.loads(self.driver('ir', path, option))
+            lines = self.driver('ir', path, option, '--summary').splitlines()
+            self.assertEqual(len(lines), len(report['queries']) + len(report['optimization']['rewrites']))
+            for query in report['queries']:
+                line = next(line for line in lines if line.startswith(f"q{query['id']} "))
+                self.assertIn(f"{query['owner']['name']}:{query['location'][0]}", line)
+                self.assertIn(f"mode={query['mode']}", line)
+                self.assertIn('filters=1 identity=True', line)
+                if 'producer_plan' in query:
+                    self.assertIn(f"producer=q{query['producer_plan']}", line)
+            if option == '--fusion':
+                self.assertIn('rewrite q1: normal -> fused producer=q0', lines)
+
+    def test_analysis_summary_preserves_decisions_and_evidence(self):
+        for name in ('fusion.py', 'analysis.py'):
+            path = self.demo(name)
+            report = json.loads(self.driver('analyze', path))
+            lines = self.driver('analyze', path, '--summary').splitlines()
+            for candidate in report['candidates']:
+                line = next(line for line in lines if line.startswith(f"q{candidate['consumer']} "))
+                self.assertIn(f"merge={candidate['status']}", line)
+                self.assertIn(f"reason={candidate['reason']}", line)
+                if 'reaching_definitions' in candidate:
+                    self.assertIn(f"reaching={candidate['reaching_definitions']}", line)
+            if name == 'analysis.py':
+                self.assertTrue(any(line.startswith('function unsupported: unknown (') for line in lines))
+
+    def test_disassembly_summary_uses_compiled_code(self):
+        path = self.demo('fusion.py')
+        for option in ('--no-fusion', '--fusion'):
+            enabled = option == '--fusion'
+            code = compile(path.read_bytes(), str(path), 'exec',
+                           flags=ast.PyCF_LINQ_FUSION if enabled else 0, dont_inherit=True)
+            function = next(c for c in code.co_consts if isinstance(c, type(code)) and c.co_name == 'make')
+            factories = [op.argval for op in dis.get_instructions(function) if op.opname == 'IMPORT_FROM']
+            output = self.driver('dis', path, option, '--summary')
+            self.assertIn(f"factories={factories}", output)
+            self.assertIn("parameters=('x',) freevars=()", output)
+            self.assertIn("parameters=('y',) freevars=()", output)
+        output = self.driver('dis', self.demo('basic.py'), '--summary')
+        self.assertIn("parameters=('score',) freevars=('minimum',)", output)
+        self.assertIn("parameters=('score',) freevars=('scale',)", output)
+
+    def test_summary_inspection_does_not_execute_program(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'inspect_only.py'
+            path.write_text('raise RuntimeError("must not execute")\n' + self.demo('fusion.py').read_text())
+            for command in ('ir', 'analyze', 'dis'):
+                output = self.driver(command, path, '--fusion', '--summary')
+                self.assertNotIn('must not execute', output)
+
+    def test_fusion_demo_restores_counter_state_after_failure(self):
+        import _linq
+        if not hasattr(_linq, '_test_counters'):
+            self.skipTest('debug-only counters')
+        self.addCleanup(_linq._test_counters, enabled=False, reset=True)
+        source = self.demo('fusion.py').read_text()
+        previous = sys.argv
+        try:
+            sys.argv = ['fusion.py', '--counts']
+            for fails in (False, True):
+                with self.subTest(fails=fails):
+                    program = source.replace('make([1, 2, 3, 4])', 'make(None)') if fails else source
+                    code = compile(program, '<demo-cleanup>', 'exec', ast.PyCF_LINQ_FUSION)
+                    namespace = {'__name__': '__main__'}
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        if fails:
+                            with self.assertRaises(TypeError):
+                                exec(code, namespace)
+                        else:
+                            exec(code, namespace)
+                    self.assertFalse(_linq._test_counters()['enabled'])
+        finally:
+            sys.argv = previous
 
 
 class QueryBindingTests(unittest.TestCase):

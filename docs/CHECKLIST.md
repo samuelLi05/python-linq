@@ -11,7 +11,7 @@ Specification: [PLAN.md](PLAN.md). Build commands: [SETUP.md](SETUP.md).
 | M3: unoptimized IR and lowering | M2 |
 | M4: CFG and data-flow analysis | M3 |
 | M5: bounded fusion | M4 |
-| M6: integration and validation | M1-M5 |
+| M6: runnable demo and code explanation | M1-M5 |
 
 ## M1: reproducible CPython override delivery
 
@@ -116,22 +116,50 @@ Architecture: [operator-extension boundaries](PLAN.md#modularity-requirements-fo
 **Deliverable:** opt-in iterator fusion with retained producer allocation and
 O(n) execution.
 
-## M6: integration, portability, and validation
+## M6: runnable demo and code explanation
 
-- [ ] **M6.1** Complete dedicated syntax, AST/tooling, semantic, timing, binding,
-  runtime ownership, analysis, and optimization tests from the specification.
-- [ ] **M6.2** Run debug-build reference-leak checks for query/iterator cycles,
-  failures, exhaustion, and partial consumption.
-- [ ] **M6.3** Pass the six baseline suites and run the broader CPython suite;
-  distinguish new failures from baseline/environment skips and failures.
-- [ ] **M6.4** Add automated real macOS and Ubuntu/Linux build/test coverage;
-  record manual Ubuntu-on-WSL setup, build, and feature-test results.
-- [ ] **M6.5** Measure runtime and iterator/callback overhead with reproducible
+Commands and expected behavior: [demo guide](../demos/README.md).
+
+- [x] **M6.1** Add readable native query examples for deferred execution,
+  projection, captures, order, and duplicates.
+- [x] **M6.2** Add compact IR, analysis, and disassembly views backed by existing
+  native reports and compiled code, preserving full output modes.
+- [x] **M6.3** Demonstrate ambiguous and unsupported analysis cases that remain
+  executable without fusion.
+- [x] **M6.4** Demonstrate equal fused/unfused results, retained producer
+  allocation, and reduced projection work through existing counters.
+- [x] **M6.5** Verify demos and the feature suite on exported and packaged
+  interpreters; run the eight bounded CPython regression suites.
+- [x] **M6.6** Document build preflight, source landmarks, and unsolved
+  modification-rehearsal prompts without adding compiler features.
+- [x] **M6.V** Record bounded demo verification and limitations; preserve pending
+  release validation separately.
+
+## Defense rehearsal (manual)
+
+- [ ] **D.1** Rehearse the five-minute demonstration and five-minute code
+  explanation using the actual sources and commands.
+- [ ] **D.2** Complete a representative code modification without AI, rebuild,
+  and verify the behavior within the eight-minute rehearsal budget.
+- [ ] **D.3** Prepare dependencies, artifacts, and commands on the defense
+  machine before arrival; confirm actual rebuild latency.
+
+## Deferred validation
+
+- [ ] **V.1** Complete remaining release-level syntax, tooling, semantic,
+  ownership, analysis, and optimization coverage beyond the demo gate.
+- [ ] **V.2** Run debug-build reference-leak checks for query/iterator cycles,
+  failures, exhaustion, partial consumption, and compiler cleanup.
+- [ ] **V.3** Run the broader CPython suite; distinguish regressions from
+  baseline/environment failures and skips.
+- [ ] **V.4** Add automated real macOS and Ubuntu/Linux build/test coverage and
+  record manual Ubuntu-on-WSL results.
+- [ ] **V.5** Measure construction and iteration costs with reproducible
   fused/unfused benchmarks.
-- [ ] **M6.6** Rebuild the final pinned archive and overrides in a clean Bazel
-  environment and run native query and optimizer tests from its artifacts.
-- [ ] **M6.V** Record final test results, commits/patches, platform limitations,
-  and unsupported cases for normal and optimized execution.
+- [ ] **V.6** Reconstruct the pinned source/overrides in a clean Bazel environment
+  and verify the resulting artifacts.
+- [ ] **V.V** Record release verification, relevant revisions, platform
+  limitations, and unsupported normal/optimized cases.
 
 ## Deferred work
 
