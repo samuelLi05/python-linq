@@ -703,6 +703,410 @@ def outer(values):
             self.assertEqual(report['functions'][0]['status'], 'analyzed')
 
 
+class QueryFusionTests(unittest.TestCase):
+    basic = """
+def make(values):
+    p = (from x in values where x > 0 select x)
+    q = (from y in p where y % 2 == 0 select y)
+    return q
+"""
+
+    def compile_program(self, source=None, fusion=False, optimize=0):
+        source = self.basic if source is None else source
+        code = compile(source, '<fusion>', 'exec',
+                       flags=ast.PyCF_LINQ_FUSION if fusion else 0,
+                       dont_inherit=True, optimize=optimize)
+        namespace = {}
+        exec(code, namespace)
+        return namespace, code
+
+    def test_opt_in_changes_factory_selection(self):
+        import _ast
+        self.assertEqual(ast.PyCF_LINQ_FUSION, _ast.PyCF_LINQ_FUSION)
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                namespace, code = self.compile_program(fusion=enabled)
+                function = namespace['make']
+                factories = [op.argval for op in dis.get_instructions(function)
+                             if op.opname == 'IMPORT_FROM']
+                self.assertEqual(factories, ['_query', '_fused_query' if enabled else '_query'])
+                self.assertFalse(code.co_flags & ast.PyCF_LINQ_FUSION)
+                self.assertFalse(function.__code__.co_flags & ast.PyCF_LINQ_FUSION)
+                self.assertEqual(list(function([-1, 1, 2, 3, 4])), [2, 4])
+
+    def test_inspection_has_before_after_snapshots(self):
+        tree = ast.parse(self.basic)
+        original = ast.dump(tree, include_attributes=True)
+        off, on = _inspect(tree), _inspect(tree, fusion=True)
+        self.assertEqual(off['analysis'], on['analysis'])
+        self.assertEqual(off['optimization'], {'enabled': False, 'rewrites': []})
+        self.assertEqual([q['mode'] for q in on['queries']], ['normal', 'fused'])
+        self.assertEqual(on['queries'][1]['producer_plan'], 0)
+        rewrite, = on['optimization']['rewrites']
+        self.assertEqual(rewrite['before'], off['queries'][1])
+        self.assertEqual(rewrite['after'], on['queries'][1])
+        self.assertEqual(on, _inspect(tree, fusion=True))
+        self.assertEqual(original, ast.dump(tree, include_attributes=True))
+        not_executed = ast.parse('raise RuntimeError("no execution")\n' + self.basic)
+        self.assertEqual(len(_inspect(not_executed, fusion=True)['optimization']['rewrites']), 1)
+
+    def test_supplied_and_ast_only_compilation(self):
+        tree = ast.parse(self.basic)
+        namespace = {}
+        exec(compile(tree, '<ast>', 'exec', ast.PyCF_LINQ_FUSION), namespace)
+        self.assertEqual(list(namespace['make']([1, 2, 4])), [2, 4])
+        for flags in (ast.PyCF_ONLY_AST, ast.PyCF_OPTIMIZED_AST):
+            result = compile(self.basic, '<ast-only>', 'exec', flags | ast.PyCF_LINQ_FUSION)
+            self.assertEqual(ast.dump(result), ast.dump(compile(self.basic, '<normal-ast>', 'exec', flags)))
+            self.assertEqual(sum(isinstance(node, ast.QueryExpr) for node in ast.walk(result)), 2)
+
+    def test_fusion_is_independent_of_optimize_level(self):
+        for level in (0, 1, 2):
+            for enabled in (False, True):
+                with self.subTest(level=level, enabled=enabled):
+                    namespace, _ = self.compile_program(fusion=enabled, optimize=level)
+                    factories = [op.argval for op in dis.get_instructions(namespace['make'])
+                                 if op.opname == 'IMPORT_FROM']
+                    self.assertEqual(factories[-1], '_fused_query' if enabled else '_query')
+
+    def test_mode_does_not_leak_into_later_dynamic_compilation(self):
+        source = 'import ast\n' + self.basic + """
+def dynamic(source):
+    return compile(source, '<dynamic>', 'exec')
+def dynamic_eval(source):
+    return eval(source)
+def dynamic_exec(source):
+    namespace = {}
+    exec(source, namespace)
+    return namespace
+"""
+        namespace, _ = self.compile_program(source, fusion=True)
+        later = namespace['dynamic'](self.basic)
+        later_namespace = {}
+        exec(later, later_namespace)
+        factories = [op.argval for op in dis.get_instructions(later_namespace['make'])
+                     if op.opname == 'IMPORT_FROM']
+        self.assertEqual(factories, ['_query', '_query'])
+        evaluated = namespace['dynamic_eval']('compile(' + repr(self.basic) + ', "<eval>", "exec")')
+        evaluated_namespace = {}
+        exec(evaluated, evaluated_namespace)
+        self.assertEqual([op.argval for op in dis.get_instructions(evaluated_namespace['make'])
+                          if op.opname == 'IMPORT_FROM'], ['_query', '_query'])
+        executed = namespace['dynamic_exec'](self.basic)
+        self.assertEqual([op.argval for op in dis.get_instructions(executed['make'])
+                          if op.opname == 'IMPORT_FROM'], ['_query', '_query'])
+
+    def test_imports_do_not_inherit_fusion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'ordinary.py').write_text(self.basic)
+            original = sys.path[:]
+            try:
+                sys.path.insert(0, directory)
+                namespace, _ = self.compile_program('import ordinary', fusion=True)
+                function = namespace['ordinary'].make
+                self.assertEqual([op.argval for op in dis.get_instructions(function)
+                                  if op.opname == 'IMPORT_FROM'], ['_query', '_query'])
+            finally:
+                sys.path[:] = original
+                sys.modules.pop('ordinary', None)
+
+    def test_nested_units_are_optimized_independently(self):
+        source = 'def outer():\n' + textwrap.indent(self.basic, '    ') + '\n    return make'
+        namespace, _ = self.compile_program(source, fusion=True)
+        inner = namespace['outer']()
+        self.assertEqual([op.argval for op in dis.get_instructions(inner)
+                          if op.opname == 'IMPORT_FROM'], ['_query', '_fused_query'])
+        self.assertEqual(list(inner([1, 2])), [2])
+
+    def test_ineligible_and_unknown_pairs_remain_normal(self):
+        for source in (self.basic.replace('select x)', 'select x * 2)'),
+                       self.basic.replace('    return q', '    alias = p\n    return q'),
+                       self.basic.replace('    return q', '    for ignored in []:\n        pass\n    return q')):
+            with self.subTest(source=source):
+                report = _inspect(ast.parse(source), fusion=True)
+                self.assertEqual(report['optimization']['rewrites'], [])
+                namespace, _ = self.compile_program(source, fusion=True)
+                self.assertNotIn('_fused_query', namespace['make'].__code__.co_names)
+
+    def test_chain_fuses_each_proven_edge(self):
+        source = self.basic.replace('    return q',
+            '    r = (from z in q where z < 4 select z)\n    return r')
+        report = _inspect(ast.parse(source), fusion=True)
+        self.assertEqual([q['mode'] for q in report['queries']], ['normal', 'fused', 'fused'])
+        for enabled in (False, True):
+            namespace, _ = self.compile_program(source, fusion=enabled)
+            self.assertEqual(list(namespace['make']([-1, 1, 2, 3, 4])), [2])
+
+    def test_callbacks_sources_and_partial_iterations_are_equivalent(self):
+        source = """
+events = []
+values = [0, 1, 2, 3, 4]
+class Source(list):
+    def __iter__(self):
+        events.append('iter')
+        return iter(values)
+def source():
+    events.append('source')
+    return Source()
+def first(x):
+    events.append(('first', x))
+    return x > 0
+def second(x):
+    events.append(('second', x))
+    return x % 2 == 0
+def make():
+    p = (from x in source() where first(x) select x)
+    q = (from y in p where second(y) select y)
+    return q
+"""
+        results = []
+        for enabled in (False, True):
+            namespace, _ = self.compile_program(source, fusion=enabled)
+            self.assertEqual('_fused_query' in namespace['make'].__code__.co_names, enabled)
+            query = namespace['make']()
+            self.assertEqual(namespace['events'], ['source'])
+            first = iter(query)
+            self.assertEqual(namespace['events'], ['source', 'iter'])
+            self.assertEqual(next(first), 2)
+            namespace['values'].append(6)
+            second = iter(query)
+            result = (list(first), list(second), list(query), namespace['events'][:])
+            results.append(result)
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(results[0][:3], ([4, 6], [2, 4, 6], [2, 4, 6]))
+
+    def test_late_capture_and_source_rebinding(self):
+        source = """
+def make(values, limit):
+    p = (from x in values where x > limit select x)
+    q = (from y in p where y < limit + 4 select y)
+    values = [99]
+    limit = 2
+    return q
+"""
+        for enabled in (False, True):
+            namespace, _ = self.compile_program(source, fusion=enabled)
+            values = [1, 2, 3, 4, 8]
+            query = namespace['make'](values, 0)
+            values.append(5)
+            self.assertEqual(list(query), [3, 4, 5])
+            report = _inspect(ast.parse(source), fusion=enabled)
+            self.assertEqual(report['queries'][-1]['mode'], 'fused' if enabled else 'normal')
+
+    def test_unauthorized_root_query_is_not_flattened(self):
+        import _linq
+        events = []
+        def project(x):
+            events.append(x)
+            return x * 2
+        root = _query([1, 2, 3], (), project, False)
+        namespace, _ = self.compile_program(fusion=True)
+        self.assertEqual(list(namespace['make'](root)), [2, 4, 6])
+        self.assertEqual(events, [1, 2, 3])
+
+    def test_callback_and_truth_errors_are_equivalent(self):
+        source = """
+class Truth:
+    def __bool__(self):
+        raise failure
+
+def callback(x):
+    if truth:
+        return Truth()
+    raise failure
+
+def make(values):
+    p = (from x in values where callback(x) select x)
+    q = (from y in p where y > 0 select y)
+    return q
+"""
+        for truth in (False, True):
+            for error in (ValueError, StopIteration):
+                for enabled in (False, True):
+                    with self.subTest(truth=truth, error=error, enabled=enabled):
+                        namespace, _ = self.compile_program(source, fusion=enabled)
+                        failure = error('callback')
+                        namespace.update(truth=truth, failure=failure)
+                        iterator = iter(namespace['make']([1]))
+                        with self.assertRaises(RuntimeError if error is StopIteration else error) as caught:
+                            next(iterator)
+                        if error is StopIteration:
+                            self.assertIs(caught.exception.__cause__, failure)
+                        else:
+                            self.assertIs(caught.exception, failure)
+                        self.assertEqual(list(iterator), [])
+
+    def test_source_errors_are_equivalent(self):
+        source = """
+class Source(list):
+    def __iter__(self):
+        raise ValueError('source')
+""" + self.basic
+        for enabled in (False, True):
+            namespace, _ = self.compile_program(source, fusion=enabled)
+            query = namespace['make'](namespace['Source']())
+            with self.assertRaisesRegex(ValueError, 'source'):
+                iter(query)
+            with self.assertRaises(TypeError):
+                namespace['make']((1, 2))
+
+    def test_fused_selector_errors_propagate_and_close_iterator(self):
+        from _linq import _fused_query
+        for error in (ValueError, StopIteration):
+            failure = error('selector')
+            def fail(value):
+                raise failure
+            parent = _query([1], (), lambda x: x, True)
+            child = _fused_query(parent, (), fail, True)
+            iterator = iter(child)
+            with self.assertRaises(RuntimeError if error is StopIteration else error) as caught:
+                next(iterator)
+            if error is StopIteration:
+                self.assertIs(caught.exception.__cause__, failure)
+            else:
+                self.assertIs(caught.exception, failure)
+            self.assertEqual(list(iterator), [])
+
+    def test_source_advancement_errors_are_equivalent(self):
+        source = """
+class Source(list):
+    def __iter__(self):
+        yield 2
+        raise failure
+""" + self.basic
+        for enabled in (False, True):
+            namespace, _ = self.compile_program(source, fusion=enabled)
+            failure = ValueError('source advancement')
+            namespace['failure'] = failure
+            iterator = iter(namespace['make'](namespace['Source']()))
+            self.assertEqual(next(iterator), 2)
+            with self.assertRaises(ValueError) as caught:
+                next(iterator)
+            self.assertIs(caught.exception, failure)
+            self.assertEqual(list(iterator), [])
+
+    def test_runtime_guards_and_normal_fallback(self):
+        from _linq import _fused_query
+        identity = lambda x: x
+        parent = _query([1, 2, 3], (), lambda x: x * 2, False)
+        child = _fused_query(parent, (lambda x: x > 2,), identity, True)
+        self.assertEqual(list(child), [4, 6])
+        self.assertEqual(list(_fused_query([1, 2], (), identity, True)), [1, 2])
+        parent = _query([1, 2], (), identity, True)
+        self.assertEqual(list(_fused_query(parent, (), lambda x: x * 3, False)), [3, 6])
+        for args in (((1, 2), (), identity, True),
+                     ([1], [], identity, True), ([1], (None,), identity, True),
+                     ([1], (), None, True), ([1], (), identity, 1)):
+            with self.subTest(args=args):
+                with self.assertRaises(TypeError) as normal:
+                    _query(*args)
+                with self.assertRaises(TypeError) as fused:
+                    _fused_query(*args)
+                self.assertEqual(str(fused.exception), str(normal.exception))
+
+    def test_fused_factory_retains_original_source_and_callbacks(self):
+        from _linq import _fused_query
+        class Callback:
+            def __call__(self, value):
+                return value > 0
+        source = [1, 2]
+        predicate = Callback()
+        reference = weakref.ref(predicate)
+        parent = _query(source, (predicate,), lambda x: x, True)
+        child = _fused_query(parent, (), lambda x: x, True)
+        self.assertTrue(any(obj is source for obj in gc.get_referents(child)))
+        self.assertTrue(any(obj is predicate for obj in gc.get_referents(child)))
+        del parent, predicate
+        gc.collect()
+        self.assertIsNotNone(reference())
+        self.assertEqual(list(child), [1, 2])
+        del child
+        gc.collect()
+        self.assertIsNone(reference())
+
+    def test_fused_query_cycles_are_collected(self):
+        from _linq import _fused_query
+        class Callback:
+            query = None
+            def __call__(self, value):
+                return value > 0
+        callback = Callback()
+        reference = weakref.ref(callback)
+        parent = _query([1], (callback,), lambda x: x, True)
+        child = _fused_query(parent, (), lambda x: x, True)
+        callback.query = child
+        iterator = iter(child)
+        del callback, parent, child, iterator
+        gc.collect()
+        self.assertIsNone(reference())
+
+    def test_counters_prove_removed_work_and_retained_allocations(self):
+        import _linq
+        if not hasattr(_linq, '_test_counters'):
+            self.skipTest('debug-only counters')
+        self.addCleanup(_linq._test_counters, enabled=False, reset=True)
+        observed = []
+        for enabled in (False, True):
+            namespace, _ = self.compile_program(fusion=enabled)
+            _linq._test_counters(enabled=True, reset=True)
+            self.assertEqual(list(namespace['make']([1, 2, 3, 4])), [2, 4])
+            observed.append(_linq._test_counters(enabled=False))
+        normal, fused = observed
+        self.assertEqual((normal['normal_queries'], normal['fused_queries']), (2, 0))
+        self.assertEqual((fused['normal_queries'], fused['fused_queries']), (1, 1))
+        for key, counts in (('query_iterators', (2, 1)), ('filter_iterators', (2, 2)),
+                            ('project_iterators', (2, 1)), ('project_calls', (6, 2))):
+            self.assertEqual((normal[key], fused[key]), counts, key)
+        _linq._test_counters(enabled=True, reset=True)
+        _linq._fused_query([1], (), lambda x: x, True)
+        self.assertEqual(_linq._test_counters(enabled=False)['fusion_fallbacks'], 1)
+        _linq._test_counters(reset=True)
+        _linq._query([], (), lambda x: x, True)
+        self.assertEqual(_linq._test_counters()['normal_queries'], 0)
+
+    def test_fusion_and_counters_are_isolated_per_interpreter(self):
+        import _linq
+        from test import support
+        if hasattr(_linq, '_test_counters'):
+            _linq._test_counters(enabled=True, reset=True)
+            self.addCleanup(_linq._test_counters, enabled=False, reset=True)
+        code = r"""
+import ast, _linq
+assert not hasattr(_linq, '_test_counters') or not _linq._test_counters()['enabled']
+source = 'def make(values):\n p = (from x in values select x)\n q = (from y in p where y > 1 select y)\n return list(q)'
+namespace = {}
+exec(compile(source, '<subinterp>', 'exec', ast.PyCF_LINQ_FUSION), namespace)
+assert namespace['make']([1, 2]) == [2]
+"""
+        self.assertEqual(support.run_in_subinterp_with_config(code,
+            own_gil=True, use_main_obmalloc=False, allow_fork=False, allow_exec=False,
+            allow_threads=True, allow_daemon_threads=False, check_multi_interp_extensions=True), 0)
+        if hasattr(_linq, '_test_counters'):
+            self.assertEqual(_linq._test_counters()['normal_queries'], 0)
+
+    def test_driver_explicit_fusion_options(self):
+        driver = Path(os.environ.get('LINQ_DRIVER',
+                      Path(__file__).resolve().parents[1] / 'scripts' / 'linq.py'))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'program.py'
+            path.write_text(self.basic + '\nprint(list(make([1, 2, 3, 4])))\n')
+            for option in ('--fusion', '--no-fusion'):
+                result = subprocess.run([sys.executable, str(driver), 'ir', option, str(path)],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(len(report['optimization']['rewrites']), 1 if option == '--fusion' else 0)
+                result = subprocess.run([sys.executable, str(driver), 'dis', option, str(path)],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual('_fused_query' in result.stdout, option == '--fusion')
+                result = subprocess.run([sys.executable, str(driver), 'run', option, str(path)],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, '[2, 4]\n')
+            self.assertFalse((Path(directory) / '__pycache__').exists())
+
+
 class QueryBindingTests(unittest.TestCase):
     def test_source_and_clause_scopes(self):
         module = symtable.symtable('''

@@ -153,6 +153,9 @@ compiler_setup(compiler *c, mod_ty mod, PyObject *filename,
     if (c->c_linq == NULL || _PyLinq_Analyze(c->c_st, c->c_linq) < 0) {
         return ERROR;
     }
+    if (_PyLinq_Optimize(c->c_linq, c->c_flags.cf_flags & PyCF_LINQ_FUSION) < 0) {
+        return ERROR;
+    }
     /* END LINQ override */
     return SUCCESS;
 }
@@ -195,7 +198,7 @@ _PyCompile_LinqPlan(compiler *c, expr_ty query)
 }
 
 PyObject *
-_PyCompile_LinqInspect(PyObject *ast, PyObject *filename, int optimize, int mode)
+_PyCompile_LinqInspect(PyObject *ast, PyObject *filename, int optimize, int mode, int fusion)
 {
     int is_ast = PyAST_Check(ast);
     if (is_ast <= 0) {
@@ -212,6 +215,7 @@ _PyCompile_LinqInspect(PyObject *ast, PyObject *filename, int optimize, int mode
     mod_ty mod = PyAST_obj2mod(ast, arena, mode);
     if (mod != NULL && _PyAST_Validate(mod)) {
         PyCompilerFlags flags = _PyCompilerFlags_INIT;
+        flags.cf_flags = fusion ? PyCF_LINQ_FUSION : 0;
         compiler *c = new_compiler(mod, filename, &flags, optimize, arena);
         if (c != NULL) {
             result = _PyLinq_Describe(c->c_linq);

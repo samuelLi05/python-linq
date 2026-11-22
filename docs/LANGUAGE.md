@@ -6,8 +6,8 @@ The compiler parses, validates, binds, plans, and lowers filtering/projection
 queries. Native query expressions execute without an explicit `_linq` import.
 Each clause compiles to an ordinary Python function; the native `_linq` runtime
 retains those functions and executes them lazily. Normal execution does not fuse
-query pipelines. Control/data-flow analysis reports fusion eligibility; opt-in
-fusion remains pending.
+query pipelines by default. Control/data-flow analysis reports eligibility, and
+explicit opt-in compilation selects guarded filter fusion.
 
 ## Syntax
 
@@ -136,7 +136,7 @@ public invocation form for those operators remain separately scoped work.
 ## Compiler inspection
 
 ```python
-_linq._inspect(tree, filename="<linq>", mode="exec", *, optimize=-1)
+_linq._inspect(tree, filename="<linq>", mode="exec", *, optimize=-1, fusion=False)
 ```
 
 This private interface accepts a matching `ast.Module`, `ast.Expression`, or
@@ -161,8 +161,15 @@ parameter, and sorted free-variable captures. Projections include `identity`.
 Identity means a load of the clause's own parameter, including class-name
 mangling. The additive `analysis` result records resolved producer definitions
 and query-plan references for named sources. The source operator's `input_plan`
-continues to describe directly nested query syntax. All plans use normal
-execution mode, including those eligible for future fusion.
+continues to describe directly nested query syntax. Normal plans have mode
+`normal`; eligible consumers selected with `fusion=True` have mode `fused` and a
+`producer_plan` reference. Source expressions and clause ASTs are not substituted.
+
+The additive `optimization` dictionary has `enabled` and `rewrites` fields.
+Each rewrite contains `before` and `after` query descriptors with the same ID;
+only authorized plans appear. Before descriptors use normal execution and after
+descriptors include the fused mode/producer reference. M4 analysis and its
+eligibility decisions remain the same with fusion off or on.
 
 The source driver uses the built interpreter:
 
@@ -173,7 +180,8 @@ The source driver uses the built interpreter:
 ./build/python scripts/linq.py run path/to/program.py argument
 ```
 
-Put `--optimize {-1,0,1,2}` before the filename. IR and analysis output are JSON. Disassembly
+Put `--optimize {-1,0,1,2}` and `--fusion`/`--no-fusion` before the filename.
+Fusion defaults to off. IR and analysis output are JSON. Disassembly
 includes nested clause code objects. Only `run` executes the program, with script
 arguments and sibling imports available. These commands do not write bytecode
 caches for the submitted source file.
@@ -231,5 +239,82 @@ purity, hidden caller-frame reflection, tracing observations, and monkey-patched
 private runtime internals are outside the supported proof model. Query callbacks
 remain deferred; unrelated captures do not prevent eligibility.
 
-The analysis does not rename variables, insert SSA phi nodes, change bytecode
-lowering, or enable fusion. Execution mode remains `normal`.
+The analysis does not rename variables, insert SSA phi nodes, or enable fusion
+itself. A separate optimizer selects guarded fused execution when explicitly
+requested; ineligible and unknown plans remain normal.
+
+## Opt-in guarded fusion
+
+```python
+import ast
+code = compile(source, filename, "exec", flags=ast.PyCF_LINQ_FUSION,
+               dont_inherit=True)
+```
+
+`PyCF_LINQ_FUSION` is a fork-specific compilation flag, disabled by default and
+independent of `-O`/`optimize`. It applies to the submitted compilation unit and
+nested function bodies. It is not placed in code-object flags, so later
+`compile()`, `eval()`, `exec()`, and imported modules do not implicitly inherit it.
+AST-only/optimized-AST requests keep explicit query nodes and do not perform
+fusion. Supplying an AST to ordinary `compile()` can enable the flag explicitly.
+
+The optimizer consumes eligible M4 decisions after binding, planning, and
+analysis. It retains producer assignments, source evaluation, and callback
+construction. Code generation loads `_linq._fused_query` for selected consumers
+and `_linq._query` for normal plans; no helper bindings enter user namespaces.
+
+The specialized private entry has the same positional argument shape:
+
+```python
+_linq._fused_query(producer, predicates, selector, identity_projection, /)
+```
+
+Validation is shared with the normal factory, in the same order. Guards require
+an exact native query from the current module, identity metadata for both sides,
+and a supported producer filter/projection layout. Guard failure uses ordinary
+nested construction; invalid arguments and allocation errors still propagate.
+Identity metadata is supplied by the compiler, not inferred by examining arbitrary
+callable bytecode in the factory.
+
+A successful fused construction retains the producer's captured source and
+original filter callbacks, appends consumer predicates, and retains the consumer
+selector. It omits the producer identity projection. No callbacks or source
+iteration run during construction. An unapproved query further upstream remains
+a separate pipeline. Already fused producers can participate in proven chains.
+
+This uses the same query and iterator types, GC support, error handling, and
+independent-iteration behavior. The producer object and selector function are
+still constructed; the consumer selector still executes. The reduction is a
+producer projection stage, its identity calls, and producer iterator-chain
+construction. Both paths remain lazy with the same traversal complexity.
+Descriptor copying can increase construction cost/storage; profitability is
+measured separately. The proof-model exclusions documented above still apply.
+
+```bash
+./build/python scripts/linq.py ir --fusion path/to/program.py
+./build/python scripts/linq.py dis --fusion path/to/program.py
+./build/python scripts/linq.py run --no-fusion path/to/program.py
+./build/python scripts/linq.py run --fusion path/to/program.py
+```
+
+Inspection and disassembly do not execute the submitted program. The driver
+explicitly selects compilation flags and does not write caches for that source.
+
+## Debug execution counters
+
+Debug builds expose `_linq._test_counters(*, enabled=None, reset=False)` for
+structural tests. State is per interpreter and counting is off by default.
+`enabled=None` preserves the setting; reset clears counts before returning the
+snapshot. Release builds omit this private testing method.
+
+The snapshot contains `enabled`, `normal_queries`, `fused_queries`,
+`fusion_fallbacks`, `query_iterators`, `filter_iterators`, `project_iterators`,
+and `project_calls`. Construction/allocation counters count successful events;
+projection calls count callback invocation attempts. Fallbacks count guard
+mismatches. Counts saturate at the native signed-size maximum.
+
+For two identity queries over `[1, 2, 3, 4]`, with a producer filter accepting
+all items and a consumer filter accepting even items, full consumption constructs
+two query objects in both modes. Iterator-chain construction falls from two to
+one, projection-stage allocation from two to one, and projection calls from six
+to two. These are structural reductions, not elapsed-time benchmark results.

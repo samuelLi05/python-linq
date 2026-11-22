@@ -195,6 +195,7 @@ _PyLinq_Build(struct symtable *st)
         PyObject *private = PyTuple_GET_ITEM(context, 1);
         plan->private_name = private == Py_None ? NULL : private;
         plan->input_plan = -1;
+        plan->fused_producer = -1;
         plan->mode = _PyLinq_NORMAL;
         PyObject *index = PyLong_FromSsize_t(i++);
         if (index == NULL) {
@@ -386,52 +387,86 @@ error:
     return NULL;
 }
 
+static PyObject *
+describe_query(const _PyLinqPlan *plan, Py_ssize_t id, PyObject *ids,
+               _PyLinqExecutionMode mode)
+{
+    if (mode != _PyLinq_NORMAL && mode != _PyLinq_FUSED) {
+        PyErr_SetString(PyExc_SystemError, "unknown LINQ execution mode");
+        return NULL;
+    }
+    PyObject *owner = describe_scope(plan->owner, ids);
+    PyObject *ops = PyList_New(plan->operator_count);
+    if (owner == NULL || ops == NULL) {
+        Py_XDECREF(owner);
+        Py_XDECREF(ops);
+        return NULL;
+    }
+    for (Py_ssize_t j = 0; j < plan->operator_count; j++) {
+        PyObject *op = describe_operator(plan, &plan->operators[j], ids);
+        if (op == NULL) {
+            Py_DECREF(owner);
+            Py_DECREF(ops);
+            return NULL;
+        }
+        PyList_SET_ITEM(ops, j, op);
+    }
+    expr_ty e = plan->query;
+    PyObject *result = Py_BuildValue("{s:n,s:O,s:(iiii),s:s,s:O}",
+        "id", id, "owner", owner, "location",
+        e->lineno, e->col_offset, e->end_lineno, e->end_col_offset,
+        "mode", mode == _PyLinq_FUSED ? "fused" : "normal", "operators", ops);
+    Py_DECREF(owner);
+    Py_DECREF(ops);
+    if (result != NULL && mode == _PyLinq_FUSED) {
+        PyObject *producer = PyLong_FromSsize_t(plan->fused_producer);
+        if (producer == NULL) { Py_DECREF(result); return NULL; }
+        int ok = PyDict_SetItemString(result, "producer_plan", producer);
+        Py_DECREF(producer);
+        if (ok < 0) { Py_DECREF(result); return NULL; }
+    }
+    return result;
+}
+
 PyObject *
 _PyLinq_Describe(const _PyLinqPlans *plans)
 {
     PyObject *queries = PyList_New(plans->count);
     PyObject *ids = PyDict_New();
-    PyObject *result = NULL;
-    if (queries == NULL || ids == NULL) {
+    PyObject *rewrites = PyList_New(0);
+    PyObject *analysis = NULL, *optimization = NULL, *result = NULL;
+    if (queries == NULL || ids == NULL || rewrites == NULL) {
         goto done;
     }
     for (Py_ssize_t i = 0; i < plans->count; i++) {
         const _PyLinqPlan *plan = &plans->plans[i];
-        PyObject *owner = describe_scope(plan->owner, ids);
-        PyObject *ops = PyList_New(plan->operator_count);
-        if (owner == NULL || ops == NULL) {
-            Py_XDECREF(owner);
-            Py_XDECREF(ops);
-            goto done;
+        PyObject *after = describe_query(plan, i, ids, plan->mode);
+        if (after == NULL) goto done;
+        PyList_SET_ITEM(queries, i, after);
+        if (plan->mode == _PyLinq_FUSED) {
+            PyObject *before = describe_query(plan, i, ids, _PyLinq_NORMAL);
+            if (before == NULL) goto done;
+            PyObject *rewrite = Py_BuildValue("{s:O,s:O}", "before", before, "after", after);
+            Py_DECREF(before);
+            if (rewrite == NULL) goto done;
+            int ok = PyList_Append(rewrites, rewrite);
+            Py_DECREF(rewrite);
+            if (ok < 0) goto done;
         }
-        for (Py_ssize_t j = 0; j < plan->operator_count; j++) {
-            PyObject *op = describe_operator(plan, &plan->operators[j], ids);
-            if (op == NULL) {
-                Py_DECREF(owner);
-                Py_DECREF(ops);
-                goto done;
-            }
-            PyList_SET_ITEM(ops, j, op);
-        }
-        expr_ty e = plan->query;
-        PyObject *description = Py_BuildValue("{s:n,s:O,s:(iiii),s:s,s:O}",
-            "id", i, "owner", owner, "location",
-            e->lineno, e->col_offset, e->end_lineno, e->end_col_offset,
-            "mode", "normal", "operators", ops);
-        Py_DECREF(owner);
-        Py_DECREF(ops);
-        if (description == NULL) {
-            goto done;
-        }
-        PyList_SET_ITEM(queries, i, description);
     }
-    PyObject *analysis = _PyLinq_AnalysisDescribe(plans);
-    if (analysis != NULL) {
-        result = Py_BuildValue("{s:O,s:O}", "queries", queries, "analysis", analysis);
-        Py_DECREF(analysis);
+    analysis = _PyLinq_AnalysisDescribe(plans);
+    optimization = Py_BuildValue("{s:O,s:O}", "enabled",
+                                 plans->fusion_enabled ? Py_True : Py_False,
+                                 "rewrites", rewrites);
+    if (analysis != NULL && optimization != NULL) {
+        result = Py_BuildValue("{s:O,s:O,s:O}", "queries", queries,
+                              "analysis", analysis, "optimization", optimization);
     }
 done:
     Py_XDECREF(queries);
     Py_XDECREF(ids);
+    Py_XDECREF(rewrites);
+    Py_XDECREF(analysis);
+    Py_XDECREF(optimization);
     return result;
 }

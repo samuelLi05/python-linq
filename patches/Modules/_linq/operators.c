@@ -5,6 +5,9 @@ typedef struct {
     PyObject *upstream;
     PyObject *callback;
     int running;
+#ifdef Py_DEBUG
+    LinqState *state;  /* The heap type retains its owning module. */
+#endif
 } LinqStage;
 
 static int
@@ -128,6 +131,7 @@ project_next(PyObject *object)
     if (item == NULL) {
         return stage_finish(stage, 0);
     }
+    LINQ_COUNT(stage->state, LINQ_PROJECT_CALLS);
     PyObject *result = PyObject_CallOneArg(stage->callback, item);
     Py_DECREF(item);
     if (result == NULL) {
@@ -185,12 +189,16 @@ LinqOperators_Init(PyObject *module, LinqState *state)
 }
 
 static PyObject *
-stage_new(PyTypeObject *type, PyObject *config, PyObject *upstream)
+stage_new(LinqState *state, PyTypeObject *type, PyObject *config, PyObject *upstream)
 {
     LinqStage *stage = (LinqStage *)type->tp_alloc(type, 0);
     if (stage == NULL) {
         return NULL;
     }
+#ifdef Py_DEBUG
+    stage->state = state;
+#endif
+    LINQ_COUNT(state, type == state->filter_type ? LINQ_FILTER_ITERATORS : LINQ_PROJECT_ITERATORS);
     stage->upstream = Py_NewRef(upstream);
     stage->callback = Py_NewRef(config);
     return (PyObject *)stage;
@@ -199,13 +207,13 @@ stage_new(PyTypeObject *type, PyObject *config, PyObject *upstream)
 static PyObject *
 filter_iter(LinqState *state, PyObject *config, PyObject *upstream)
 {
-    return stage_new(state->filter_type, config, upstream);
+    return stage_new(state, state->filter_type, config, upstream);
 }
 
 static PyObject *
 project_iter(LinqState *state, PyObject *config, PyObject *upstream)
 {
-    return stage_new(state->project_type, config, upstream);
+    return stage_new(state, state->project_type, config, upstream);
 }
 
 PyObject *

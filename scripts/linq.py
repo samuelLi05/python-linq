@@ -17,19 +17,21 @@ def main():
     for name in ("ir", "analyze", "dis", "run"):
         command = commands.add_parser(name)
         command.add_argument("--optimize", type=int, choices=(-1, 0, 1, 2), default=-1)
+        command.add_argument("--fusion", action=argparse.BooleanOptionalAction, default=False)
         command.add_argument("file", type=Path)
         if name == "run":
             command.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     path = args.file.resolve()
     source = path.read_bytes()
+    flags = ast.PyCF_LINQ_FUSION if args.fusion else 0
     if args.command in ("ir", "analyze"):
-        tree = compile(source, str(path), "exec", flags=ast.PyCF_ONLY_AST,
+        tree = compile(source, str(path), "exec", flags=ast.PyCF_ONLY_AST | flags,
                        dont_inherit=True, optimize=args.optimize)
-        report = _inspect(tree, str(path), optimize=args.optimize)
+        report = _inspect(tree, str(path), optimize=args.optimize, fusion=args.fusion)
         print(json.dumps(report["analysis"] if args.command == "analyze" else report, indent=2))
         return
-    code = compile(source, str(path), "exec", dont_inherit=True, optimize=args.optimize)
+    code = compile(source, str(path), "exec", flags=flags, dont_inherit=True, optimize=args.optimize)
     if args.command == "dis":
         dis.dis(code)
         return

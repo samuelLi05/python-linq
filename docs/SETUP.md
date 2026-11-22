@@ -116,7 +116,8 @@ bazel test //:build_smoke --test_output=all
 artifact. It rejects links in the archive, extracts it into a temporary directory,
 and runs `tests/test_queries.py` using that distribution's `bin/python-linq`.
 The suite covers frontend behavior, scope binding, AST tooling, native query
-execution, IR/CFG/data-flow inspection, eligibility decisions, generated clause
+execution, guarded fusion/equivalence, IR/CFG/data-flow inspection, eligibility
+decisions, generated clause
 functions, driver behavior, and runtime
 results, timing, iteration, failures, ownership, and subinterpreters.
 
@@ -136,7 +137,17 @@ or execute a source file with:
 ./build/python scripts/linq.py run path/to/program.py
 ```
 
-See [LANGUAGE.md](LANGUAGE.md) for syntax and inspection contracts.
+Enable guarded fusion explicitly for the submitted source:
+
+```bash
+./build/python scripts/linq.py ir --fusion path/to/program.py
+./build/python scripts/linq.py dis --fusion path/to/program.py
+./build/python scripts/linq.py run --fusion path/to/program.py
+```
+
+The default and `--no-fusion` use normal execution. `-O` is independent. The debug
+build includes opt-in per-interpreter test counters. See
+[LANGUAGE.md](LANGUAGE.md) for syntax, flag, inspection, and counter contracts.
 
 To use the packaged artifact outside Bazel, choose an extraction directory:
 

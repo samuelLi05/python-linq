@@ -14,7 +14,7 @@ extern "C" {
 #include "pycore_linq.h"
 struct _PyCompiler;
 const _PyLinqPlan *_PyCompile_LinqPlan(struct _PyCompiler *, expr_ty);
-PyObject *_PyCompile_LinqInspect(PyObject *, PyObject *, int, int);
+PyObject *_PyCompile_LinqInspect(PyObject *, PyObject *, int, int, int);
 /* END LINQ override */
 
 #include "pycore_ast.h"       // mod_ty

@@ -2,8 +2,9 @@
 
 A CPython 3.14.0 compiler project adding native declarative queries over lists.
 Query parsing, AST tooling, binding, compiler-owned query IR, native lowering,
-a lazy C runtime, and control/data-flow analysis are implemented. Opt-in query
-fusion remains to be implemented.
+a lazy C runtime, control/data-flow analysis, and guarded opt-in filter fusion
+are implemented. Integration, platform validation, and performance measurements
+remain in M6.
 
 Compiler changes are tracked as complete replacement files under `patches/`,
 using CPython-relative paths. The ignored `cpython/` checkout is reference source;
@@ -55,4 +56,15 @@ inspection commands do not execute the submitted program. All subcommands accept
 
 Analysis reports eligible, ineligible, or unknown candidates. Unsupported
 constructs make the whole function unknown while its queries continue executing
-normally. All query plans still use unfused execution.
+normally. Fusion is disabled by default and independent of `-O`. Enable it for
+an explicit source compilation through the driver:
+
+```bash
+./build/python scripts/linq.py ir --fusion path/to/program.py
+./build/python scripts/linq.py dis --fusion path/to/program.py
+./build/python scripts/linq.py run --fusion path/to/program.py argument
+```
+
+Use `--no-fusion` for the normal path. IR output includes before/after rewrite
+snapshots. Direct callers can use `compile(..., flags=ast.PyCF_LINQ_FUSION)`.
+The flag does not implicitly enable fusion in imports or later dynamic compilation.

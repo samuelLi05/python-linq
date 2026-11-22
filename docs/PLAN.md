@@ -3,8 +3,9 @@
 Implementation tracking: [CHECKLIST.md](CHECKLIST.md).
 Build instructions: [SETUP.md](SETUP.md).
 Status: the frontend, AST tooling, binding, query IR, native syntax lowering,
-lazy C runtime, and control/data-flow analysis are implemented. Opt-in fusion
-remains pending.
+lazy C runtime, control/data-flow analysis, and guarded opt-in fusion are
+implemented. Broader integration, portability, and performance validation remain
+in M6.
 
 ## Goal, priorities, and boundaries
 
@@ -19,8 +20,8 @@ Delivery order:
 3. A bounded, opt-in fusion optimization that changes generated execution.
 4. Additional operator families as independent extensions to the core pipeline.
 
-The first release checkpoint is native filtering/projection. Analysis and fusion
-remain the next delivery priorities, but are not architectural prerequisites for
+The core checkpoints deliver native filtering/projection, analysis, and guarded
+opt-in fusion. Their completion is not an architectural prerequisite for
 every additional operator. Each extension depends on the core capabilities it
 uses; the deferred inventory and extension requirements are specified below.
 No fixed deadline is specified.
@@ -191,7 +192,7 @@ capture, ambiguity, unbound input, nonidentity projection, extra-use, and
 adjacency failures are ineligible for the v1 pattern. A candidate describes
 merging a query with its input; ineligible does not mean the query is invalid.
 Reassignment is definition-sensitive: uses of earlier/later values are not
-attributed to the selected producer. No query is fused during M4.
+attributed to the selected producer. Analysis alone does not fuse queries; the separate opt-in pass applies M5 rewrites.
 
 ## Fusion: transformation, proof, and limits
 
@@ -228,11 +229,12 @@ This is an actual compiler-directed optimization: analysis authorizes a changed
 IR execution mode and code generation selects the specialized factory. Runtime
 composition alone does not satisfy the analysis milestone.
 
-The benefit is removal of an intermediate iterator layer and redundant producer
-identity-selector calls. Both versions are already lazy and O(n); there is no
+The benefit is removal of the producer projection stage, its iterator-chain
+construction, and redundant producer identity-selector calls. Both versions are already lazy and O(n); there is no
 intermediate materialized list to eliminate. The first pass does not eliminate
 producer allocation, reorder predicates, substitute projections, or fuse general
-Python loops. Evaluate runtime overhead with benchmarks.
+Python loops. Descriptor copying can increase construction cost/storage; evaluate net runtime
+overhead with benchmarks.
 
 Guarantees cover values, source/callback evaluation order, captures, and exceptions
 within the supported model. Reflective observation of frames, tracing/profiling
@@ -255,7 +257,7 @@ objects own the source and callbacks; each iterator owns its execution state.
 Implement reference-counting, GC traversal/clearing, error/exhaustion cleanup,
 and per-interpreter module state following existing CPython conventions.
 
-The normal factory is implemented; the fused factory remains M5 work. Runtime
+Normal and guarded fused factories are implemented. Runtime
 operator descriptions dispatch to separate native stage constructors and are
 distinct from compiler IR. The current language and runtime interfaces are
 specified in [LANGUAGE.md](LANGUAGE.md).
@@ -267,7 +269,7 @@ Python bytecode. It is compiled once when building CPython, not generated per
 query. Do not lower queries to Python `filter`, `map`, comprehensions, or a
 third-party library.
 
-Add the fork-specific `ast.PyCF_LINQ_FUSION` compilation flag, disabled by default.
+The fork-specific `ast.PyCF_LINQ_FUSION` compilation flag is disabled by default.
 It affects the submitted compilation unit and nested function bodies, not
 ordinary `-O`, dynamically compiled future units, or imported modules. AST-only
 compilation keeps explicit query structure; fusion operates on compiler-owned
@@ -279,6 +281,14 @@ normal compilation. The additive `analysis` result exposes CFGs, definitions,
 uses, reaching sets, dominators, eligibility reasons, and evidence. Unsupported
 functions expose reasons and locations without partial solver facts. `analyze`
 prints this analysis result alone. All IDs are deterministic within the report.
+The inspector accepts `fusion=False`; the driver accepts `--fusion` and
+`--no-fusion`, defaulting to off. The optimizer marks eligible consumer plans
+with a fused execution mode and producer reference after analysis. The additive
+`optimization` report includes the enabled setting and native before/after query
+descriptors for applied rewrites. Code generation uses these modes to select the
+normal or guarded factory without rewriting source or recreating producer
+closures. The flag is a compile-only option, excluded from inherited code flags;
+AST-only requests preserve query structure without applying the optimizer.
 Explicitly compile
 source for optimized/unoptimized comparisons, without introducing a separate
 bytecode-cache mode. Inspection must not execute the inspected program.

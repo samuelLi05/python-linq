@@ -2083,7 +2083,8 @@ codegen_query(compiler *c, expr_ty query)
     if (plan == NULL) {
         return ERROR;
     }
-    if (plan->mode != _PyLinq_NORMAL || plan->operator_count < 2 ||
+    if ((plan->mode != _PyLinq_NORMAL && plan->mode != _PyLinq_FUSED) ||
+        plan->operator_count < 2 ||
         plan->operators[0].kind != _PyLinq_SOURCE ||
         plan->operators[plan->operator_count - 1].kind != _PyLinq_PROJECT) {
         PyErr_SetString(PyExc_SystemError, "invalid LINQ execution plan");
@@ -2091,7 +2092,8 @@ codegen_query(compiler *c, expr_ty query)
     }
     location loc = LOC(query);
     PyObject *module = PyUnicode_FromString("_linq");
-    PyObject *factory = PyUnicode_FromString("_query");
+    PyObject *factory = PyUnicode_FromString(
+        plan->mode == _PyLinq_FUSED ? "_fused_query" : "_query");
     PyObject *fromlist = factory ? PyTuple_Pack(1, factory) : NULL;
     int result = ERROR;
     if (module != NULL && fromlist != NULL &&

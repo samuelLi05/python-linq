@@ -15,7 +15,8 @@ typedef enum {
 } _PyLinqOpKind;
 
 typedef enum {
-    _PyLinq_NORMAL
+    _PyLinq_NORMAL,
+    _PyLinq_FUSED
 } _PyLinqExecutionMode;
 
 typedef enum {
@@ -39,6 +40,7 @@ typedef struct {
     _PyLinqOperator *operators;
     Py_ssize_t operator_count;
     Py_ssize_t input_plan;
+    Py_ssize_t fused_producer;
     int identity_projection;
     _PyLinqExecutionMode mode;
 } _PyLinqPlan;
@@ -52,6 +54,7 @@ typedef struct {
 } _PyLinqDecision;
 
 typedef struct {
+    int fusion_enabled;
     _PyLinqAnalysis *analysis;
     PyObject *index;
     _PyLinqPlan *plans;
@@ -71,6 +74,7 @@ _PyLinq_ClauseKey(expr_ty query, Py_ssize_t clause)
 }
 
 int _PyLinq_RegisterFunction(struct symtable *, stmt_ty);
+int _PyLinq_Optimize(_PyLinqPlans *, int);
 int _PyLinq_Analyze(struct symtable *, _PyLinqPlans *);
 void _PyLinq_AnalysisFree(_PyLinqAnalysis *);
 PyObject *_PyLinq_AnalysisDescribe(const _PyLinqPlans *);

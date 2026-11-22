@@ -97,19 +97,19 @@ Architecture: [operator-extension boundaries](PLAN.md#modularity-requirements-fo
 
 ## M5: bounded opt-in fusion
 
-- [ ] **M5.1** Add `ast.PyCF_LINQ_FUSION`: disabled by default, compilation-unit
+- [x] **M5.1** Add `ast.PyCF_LINQ_FUSION`: disabled by default, compilation-unit
   scope only, independent of `-O`, with explicit AST-only behavior.
-- [ ] **M5.2** Transform only proven eligible IR inputs to fused execution mode;
+- [x] **M5.2** Transform only proven eligible IR inputs to fused execution mode;
   preserve producer construction/assignment, captured source, and callback objects.
-- [ ] **M5.3** Implement the guarded fused C factory with exact native-type and
+- [x] **M5.3** Implement the guarded fused C factory with exact native-type and
   identity-metadata checks, and normal-construction fallback.
-- [ ] **M5.4** Select specialized factory calls only for authorized plans; append
+- [x] **M5.4** Select specialized factory calls only for authorized plans; append
   predicates in order and bypass the producer iterator/identity selector.
-- [ ] **M5.5** Extend the developer driver for explicit flag-on/off source
+- [x] **M5.5** Extend the developer driver for explicit flag-on/off source
   compilation, analysis explanations, and before/after IR; avoid cache ambiguity.
-- [ ] **M5.6** Add IR/code-generation assertions and test-only counters for
+- [x] **M5.6** Add IR/code-generation assertions and test-only counters for
   intermediate-iterator bypass and eliminated producer identity-selector calls.
-- [ ] **M5.V** Verify equal values and callback event logs with fusion on/off,
+- [x] **M5.V** Verify equal values and callback event logs with fusion on/off,
   including source rebinding/mutation, captures, short circuit, partial iteration,
   exceptions, repeated iteration, runtime guards, and retained producer timing.
 

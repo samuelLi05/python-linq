@@ -71,6 +71,7 @@ query_iter_impl(PyObject *object)
         }
         upstream = stage;
     }
+    LINQ_COUNT(state, LINQ_QUERY_ITERATORS);
     return upstream;
 }
 
@@ -101,41 +102,52 @@ static PyType_Spec query_spec = {
     .slots = query_slots,
 };
 
-static PyObject *
-linq_query(PyObject *module, PyObject *args)
+static int
+query_arguments(LinqState *state, PyObject *args, int fused,
+                PyObject **source, PyObject **predicates,
+                PyObject **selector, PyObject **identity)
 {
-    PyObject *source, *predicates, *selector, *identity;
-    if (!PyArg_ParseTuple(args, "OOOO:_query", &source, &predicates, &selector, &identity)) {
-        return NULL;
+    if (!PyArg_ParseTuple(args, fused ? "OOOO:_fused_query" : "OOOO:_query",
+                         source, predicates, selector, identity)) {
+        return -1;
     }
-    LinqState *state = PyModule_GetState(module);
-    if (!PyList_Check(source) && Py_TYPE(source) != state->query_type) {
+    if (!PyList_Check(*source) && Py_TYPE(*source) != state->query_type) {
         PyErr_SetString(PyExc_TypeError, "LINQ source must be a list or native query");
-        return NULL;
+        return -1;
     }
-    if (!PyTuple_Check(predicates)) {
+    if (!PyTuple_Check(*predicates)) {
         PyErr_SetString(PyExc_TypeError, "LINQ predicates must be a tuple of callables");
-        return NULL;
+        return -1;
     }
-    Py_ssize_t count = PyTuple_GET_SIZE(predicates);
-    for (Py_ssize_t i = 0; i < count; i++) {
-        if (!PyCallable_Check(PyTuple_GET_ITEM(predicates, i))) {
+    for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(*predicates); i++) {
+        if (!PyCallable_Check(PyTuple_GET_ITEM(*predicates, i))) {
             PyErr_SetString(PyExc_TypeError, "LINQ predicate must be callable");
-            return NULL;
+            return -1;
         }
     }
-    if (!PyCallable_Check(selector)) {
+    if (!PyCallable_Check(*selector)) {
         PyErr_SetString(PyExc_TypeError, "LINQ selector must be callable");
-        return NULL;
+        return -1;
     }
-    if (!PyBool_Check(identity)) {
+    if (!PyBool_Check(*identity)) {
         PyErr_SetString(PyExc_TypeError, "LINQ identity metadata must be a bool");
-        return NULL;
+        return -1;
     }
-    if (count > PY_SSIZE_T_MAX / (Py_ssize_t)sizeof(LinqOperator) - 1) {
+    return 0;
+}
+
+static PyObject *
+query_create(LinqState *state, PyObject *source, PyObject *predicates,
+             PyObject *selector, PyObject *identity, LinqQuery *producer)
+{
+    Py_ssize_t prefix = producer ? producer->operator_count - 1 : 0;
+    Py_ssize_t count = PyTuple_GET_SIZE(predicates);
+    Py_ssize_t maximum = PY_SSIZE_T_MAX / (Py_ssize_t)sizeof(LinqOperator);
+    if (prefix > maximum - 1 || count > maximum - 1 - prefix) {
         return PyErr_NoMemory();
     }
-    LinqOperator *operators = PyMem_Calloc(count + 1, sizeof(LinqOperator));
+    Py_ssize_t total = prefix + count + 1;
+    LinqOperator *operators = PyMem_Calloc(total, sizeof(LinqOperator));
     if (operators == NULL) {
         return PyErr_NoMemory();
     }
@@ -144,18 +156,110 @@ linq_query(PyObject *module, PyObject *args)
         PyMem_Free(operators);
         return NULL;
     }
-    query->source = Py_NewRef(source);
+    query->source = Py_NewRef(producer ? producer->source : source);
     query->operators = operators;
-    query->operator_count = count + 1;
+    query->operator_count = total;
     query->identity_projection = identity == Py_True;
-    for (Py_ssize_t i = 0; i < count; i++) {
-        operators[i].kind = LINQ_FILTER;
-        operators[i].config = Py_NewRef(PyTuple_GET_ITEM(predicates, i));
+    for (Py_ssize_t i = 0; i < prefix; i++) {
+        operators[i] = (LinqOperator){LINQ_FILTER, Py_NewRef(producer->operators[i].config)};
     }
-    operators[count].kind = LINQ_PROJECT;
-    operators[count].config = Py_NewRef(selector);
+    for (Py_ssize_t i = 0; i < count; i++) {
+        operators[prefix + i] = (LinqOperator){LINQ_FILTER, Py_NewRef(PyTuple_GET_ITEM(predicates, i))};
+    }
+    operators[total - 1] = (LinqOperator){LINQ_PROJECT, Py_NewRef(selector)};
+    LINQ_COUNT(state, producer ? LINQ_FUSED_QUERIES : LINQ_NORMAL_QUERIES);
     return (PyObject *)query;
 }
+
+static PyObject *
+linq_query(PyObject *module, PyObject *args)
+{
+    PyObject *source, *predicates, *selector, *identity;
+    LinqState *state = PyModule_GetState(module);
+    if (query_arguments(state, args, 0, &source, &predicates, &selector, &identity) < 0) {
+        return NULL;
+    }
+    return query_create(state, source, predicates, selector, identity, NULL);
+}
+
+static int
+can_fuse(LinqState *state, PyObject *source, PyObject *identity)
+{
+    if (Py_TYPE(source) != state->query_type || identity != Py_True) {
+        return 0;
+    }
+    LinqQuery *producer = (LinqQuery *)source;
+    if (!producer->identity_projection || producer->source == NULL ||
+        producer->operator_count < 1) {
+        return 0;
+    }
+    for (Py_ssize_t i = 0; i < producer->operator_count; i++) {
+        LinqOperatorKind expected = i == producer->operator_count - 1 ? LINQ_PROJECT : LINQ_FILTER;
+        if (producer->operators[i].kind != expected || producer->operators[i].config == NULL) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static PyObject *
+linq_fused_query(PyObject *module, PyObject *args)
+{
+    PyObject *source, *predicates, *selector, *identity;
+    LinqState *state = PyModule_GetState(module);
+    if (query_arguments(state, args, 1, &source, &predicates, &selector, &identity) < 0) {
+        return NULL;
+    }
+    if (!can_fuse(state, source, identity)) {
+        LINQ_COUNT(state, LINQ_FUSION_FALLBACKS);
+        return query_create(state, source, predicates, selector, identity, NULL);
+    }
+    return query_create(state, source, predicates, selector, identity, (LinqQuery *)source);
+}
+
+PyDoc_STRVAR(fused_doc,
+"_fused_query($module, producer, predicates, selector, identity_projection, /)\n"
+"--\n\n"
+"Construct a guarded fused query, with normal-construction fallback.");
+
+#ifdef Py_DEBUG
+static PyObject *
+linq_test_counters(PyObject *module, PyObject *args, PyObject *kwargs)
+{
+    static char *keywords[] = {"enabled", "reset", NULL};
+    static const char *names[LINQ_COUNTER_COUNT] = {
+        "normal_queries", "fused_queries", "fusion_fallbacks", "query_iterators",
+        "filter_iterators", "project_iterators", "project_calls"
+    };
+    PyObject *enabled = Py_None;
+    int reset = 0;
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|$Op:_test_counters", keywords,
+                                     &enabled, &reset)) {
+        return NULL;
+    }
+    LinqState *state = PyModule_GetState(module);
+    if (enabled != Py_None) {
+        int value = PyObject_IsTrue(enabled);
+        if (value < 0) return NULL;
+        state->test_enabled = value;
+    }
+    if (reset) memset(state->test_counts, 0, sizeof(state->test_counts));
+    PyObject *result = PyDict_New();
+    if (result == NULL) return NULL;
+    for (int i = 0; i < LINQ_COUNTER_COUNT; i++) {
+        PyObject *value = PyLong_FromSsize_t(state->test_counts[i]);
+        if (value == NULL) { Py_DECREF(result); return NULL; }
+        int ok = PyDict_SetItemString(result, names[i], value);
+        Py_DECREF(value);
+        if (ok < 0) { Py_DECREF(result); return NULL; }
+    }
+    if (PyDict_SetItemString(result, "enabled", state->test_enabled ? Py_True : Py_False) < 0) {
+        Py_DECREF(result);
+        return NULL;
+    }
+    return result;
+}
+#endif
 
 PyDoc_STRVAR(query_doc,
 "_query($module, source, predicates, selector, identity_projection, /)\n"
@@ -165,13 +269,14 @@ PyDoc_STRVAR(query_doc,
 static PyObject *
 linq_inspect(PyObject *module, PyObject *args, PyObject *kwargs)
 {
-    static char *keywords[] = {"tree", "filename", "mode", "optimize", NULL};
+    static char *keywords[] = {"tree", "filename", "mode", "optimize", "fusion", NULL};
     PyObject *tree;
     PyObject *filename = NULL;
     const char *mode = "exec";
     int optimize = -1;
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|Us$i:_inspect", keywords,
-                                     &tree, &filename, &mode, &optimize)) {
+    int fusion = 0;
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|Us$ip:_inspect", keywords,
+                                     &tree, &filename, &mode, &optimize, &fusion)) {
         return NULL;
     }
     int compile_mode;
@@ -196,18 +301,23 @@ linq_inspect(PyObject *module, PyObject *args, PyObject *kwargs)
     if (filename == NULL) {
         return NULL;
     }
-    PyObject *result = _PyCompile_LinqInspect(tree, filename, optimize, compile_mode);
+    PyObject *result = _PyCompile_LinqInspect(tree, filename, optimize, compile_mode, fusion);
     Py_DECREF(filename);
     return result;
 }
 
 PyDoc_STRVAR(inspect_doc,
-"_inspect($module, tree, filename='<linq>', mode='exec', *, optimize=-1)\n"
+"_inspect($module, tree, filename='<linq>', mode='exec', *, optimize=-1, fusion=False)\n"
 "--\n\n"
 "Inspect bound query plans without generating instructions or executing code.");
 
 static PyMethodDef linq_methods[] = {
     {"_query", linq_query, METH_VARARGS, query_doc},
+    {"_fused_query", linq_fused_query, METH_VARARGS, fused_doc},
+#ifdef Py_DEBUG
+    {"_test_counters", _PyCFunction_CAST(linq_test_counters), METH_VARARGS | METH_KEYWORDS,
+     "Control debug-only per-interpreter execution counters."},
+#endif
     {"_inspect", _PyCFunction_CAST(linq_inspect), METH_VARARGS | METH_KEYWORDS, inspect_doc},
     {NULL, NULL, 0, NULL}
 };
